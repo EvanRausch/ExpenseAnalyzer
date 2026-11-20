@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ExpenseAnalyzer</title>
+  <meta name="description" content="ExpenseAnalyzer — a personal desktop application for tracking and analyzing expenses." />
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2129;
+      --text: #e6edf3;
+      --muted: #9aa7b2;
+      --accent: #4da3ff;
+      --border: #2b3640;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+    }
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 4rem;
+    }
+    header { text-align: center; padding: 3rem 0 2rem; }
+    header h1 { font-size: 2.6rem; letter-spacing: -0.02em; }
+    header .tagline { color: var(--muted); font-size: 1.15rem; margin-top: 0.75rem; }
+    .badge {
+      display: inline-block;
+      margin-top: 1.25rem;
+      padding: 0.35rem 0.9rem;
+      border: 1px solid var(--accent);
+      border-radius: 999px;
+      color: var(--accent);
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    nav { text-align: center; margin: 1.5rem 0 2.5rem; }
+    nav a { color: var(--accent); text-decoration: none; margin: 0 0.75rem; }
+    nav a:hover { text-decoration: underline; }
+    section { margin-top: 3rem; }
+    h2 {
+      font-size: 1.5rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    h3 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+    p { margin-bottom: 1rem; color: var(--text); }
+    .muted { color: var(--muted); }
+    a { color: var(--accent); }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.5rem;
+    }
+    footer {
+      margin-top: 4rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>ExpenseAnalyzer</h1>
+      <p class="tagline">A personal desktop application for tracking, categorizing, and analyzing expenses.</p>
+      <span class="badge">Currently in active development</span>
+    </header>
+
+    <nav>
+      <a href="#about">About</a>
+      <a href="#privacy">Privacy Policy</a>
+      <a href="#contact">Contact</a>
+    </nav>
+
+    <section id="about">
+      <h2>About</h2>
+      <div class="card">
+        <p>
+          ExpenseAnalyzer is a personal finance desktop application that imports bank
+          transactions, automatically categorizes them, and provides insights into
+          spending habits over time. It connects to financial institutions securely
+          through <a href="https://plaid.com" rel="noopener">Plaid</a> to retrieve
+          account balances and transaction data.
+        </p>
+        <p class="muted">
+          The application is developed and used solely by its creator and is currently
+          in active development.
+        </p>
+      </div>
+    </section>
+
+    <section id="privacy">
+      <h2>Privacy Policy</h2>
+      <p class="muted"><strong>Last updated:</strong> November 20, 2026</p>
+      <p>
+        This application is a personal desktop application developed and used solely
+        by its creator.
+      </p>
+
+      <h3>Information Collected</h3>
+      <p>
+        The application may access financial account information through Plaid in
+        order to retrieve account balances and transaction data.
+      </p>
+
+      <h3>Use of Information</h3>
+      <p>
+        The information is used exclusively by the developer for personal financial
+        management and testing purposes.
+      </p>
+
+      <h3>Sharing of Information</h3>
+      <p>
+        No personal or financial information is shared with third parties except as
+        necessary to access financial data through Plaid and the connected financial
+        institution.
+      </p>
+
+      <h3>Data Storage</h3>
+      <p>
+        Financial data is stored only on the developer's personal device unless
+        otherwise stated.
+      </p>
+
+      <h3>Contact</h3>
+      <p>
+        For questions regarding this application, contact:
+        <a href="mailto:evanrauschl@gmail.com">evanrauschl@gmail.com</a>
+      </p>
+    </section>
+
+    <section id="contact">
+      <h2>Contact</h2>
+      <div class="card">
+        <p>
+          Questions or inquiries:
+          <a href="mailto:evanrauschl@gmail.com">evanrauschl@gmail.com</a>
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      &copy; 2026 ExpenseAnalyzer &middot; <a href="#privacy">Privacy Policy</a>
+    </footer>
+  </div>
+</body>
+</html>

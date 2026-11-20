@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Unique label — must match the filename -->
+  <key>Label</key>
+  <string>com.budgettracker.csvwatchdog</string>
+
+  <!-- Absolute paths required by launchd — no shell expansion -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/evanrausch-larouche/miniconda3/envs/budgettracker/bin/python</string>
+    <string>-m</string>
+    <string>src.csv_watchdog</string>
+  </array>
+
+  <!-- Run from project root so relative imports work -->
+  <key>WorkingDirectory</key>
+  <string>/Users/evanrausch-larouche/Documents/Personal_projects/BudgetTracker</string>
+
+  <!-- Start automatically on login and keep alive if it crashes -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Log stdout/stderr to files you can inspect any time -->
+  <key>StandardOutPath</key>
+  <string>/Users/evanrausch-larouche/Documents/Personal_projects/BudgetTracker/logs/csvwatchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/evanrausch-larouche/Documents/Personal_projects/BudgetTracker/logs/csvwatchdog.error.log</string>
+
+  <!-- Throttle rapid restart loops (seconds between restart attempts) -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>
