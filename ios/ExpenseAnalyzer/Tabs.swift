@@ -1,0 +1,422 @@
+import Charts
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct SummaryTab: View {
+    @Environment(DataStore.self) private var store
+    @State private var filter = TransactionFilter()
+    /// Categories left out of the summary, one per line.
+    @AppStorage("hiddenCategories") private var hiddenText = ""
+
+    var body: some View {
+        let hidden = Set(hiddenText.split(separator: "\n").map(String.init))
+        let filtered = filter.apply(store.spending)
+        let shown = filtered.filter { !hidden.contains($0.category) }
+        let groups = shown.grouped(by: \.category)
+        let total = shown.total
+        NavigationStack {
+            List {
+                Section {
+                    FilterBar(filter: $filter, transactions: store.spending)
+                }
+                if groups.isEmpty {
+                    ContentUnavailableView("No spending", systemImage: "chart.pie")
+                } else {
+                    Section {
+                        ShareChart(groups: groups)
+                    }
+                    Section {
+                        ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                            NavigationLink(value: Route.merchants(group.name)) {
+                                GroupRow(
+                                    title: "\(store.emoji(for: group.name)) \(group.name)",
+                                    group: group,
+                                    grandTotal: total,
+                                    color: Palette.color(index))
+                            }
+                            .swipeActions {
+                                Button("Hide", systemImage: "eye.slash") {
+                                    setHidden(hidden.union([group.name]))
+                                }
+                            }
+                        }
+                    } footer: {
+                        if !hidden.isEmpty {
+                            Text(
+                                "\(hidden.count) hidden: \(hidden.sorted().joined(separator: ", "))"
+                            )
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Summary")
+            .toolbar {
+                Menu {
+                    ForEach(Set(filtered.map(\.category)).union(hidden).sorted(), id: \.self) {
+                        category in
+                        Toggle(
+                            category,
+                            isOn: Binding(
+                                get: { !hidden.contains(category) },
+                                set: {
+                                    setHidden(
+                                        $0
+                                            ? hidden.subtracting([category])
+                                            : hidden.union([category]))
+                                }
+                            ))
+                    }
+                } label: {
+                    Label("Shown Categories", systemImage: hidden.isEmpty ? "eye" : "eye.slash")
+                }
+                SyncMenu()
+            }
+            .refreshable { await store.reload() }
+            .drillDown(into: shown)
+        }
+    }
+
+    private func setHidden(_ categories: Set<String>) {
+        hiddenText = categories.sorted().joined(separator: "\n")
+    }
+}
+
+struct TransactionsTab: View {
+    @Environment(DataStore.self) private var store
+    @State private var filter = TransactionFilter()
+
+    var body: some View {
+        let filtered = filter.apply(store.spending)
+        let total = filtered.total
+        NavigationStack {
+            List {
+                Section {
+                    FilterBar(filter: $filter, transactions: store.spending)
+                }
+                Section {
+                    NavigationLink(value: Route.transactions(Scope())) {
+                        GroupRow(
+                            title: "All transactions",
+                            group: GroupTotal(name: "All", total: total, count: filtered.count),
+                            grandTotal: total)
+                    }
+                    ForEach(filtered.grouped(by: \.category)) { group in
+                        NavigationLink(value: Route.merchants(group.name)) {
+                            GroupRow(
+                                title: "\(store.emoji(for: group.name)) \(group.name)",
+                                subtitle: store.data.categoryDescriptions[group.name] ?? "",
+                                group: group,
+                                grandTotal: total)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Transactions")
+            .toolbar { SyncMenu() }
+            .refreshable { await store.reload() }
+            .drillDown(into: filtered)
+        }
+    }
+}
+
+struct StatisticsTab: View {
+    @Environment(DataStore.self) private var store
+    @State private var from: Date?
+    @State private var to: Date?
+    @State private var category: String?
+
+    var body: some View {
+        let spending = store.spending
+        let overall = OverallStats(spending: spending)
+        NavigationStack {
+            List {
+                if spending.isEmpty {
+                    ContentUnavailableView("No spending", systemImage: "chart.bar")
+                } else {
+                    overview(overall)
+                    trend(overall.monthly)
+                    period(spending)
+                    breakdown(spending)
+                }
+                Section("AI Spending Analysis") {
+                    if store.data.aiAnalysis.isEmpty {
+                        Text("No analysis yet. Open the Statistics tab on your Mac to create one.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        MarkdownText(text: store.data.aiAnalysis)
+                    }
+                }
+            }
+            .navigationTitle("Statistics")
+            .toolbar { SyncMenu() }
+            .refreshable { await store.reload() }
+            .drillDown(into: spending)
+        }
+    }
+
+    private func overview(_ overall: OverallStats) -> some View {
+        Section("All-Time Overview") {
+            StatRow("Total expenses", overall.totalExpense.money)
+            StatRow("Months covered", "\(overall.monthly.count)")
+            StatRow("Average monthly spend", overall.averageMonthly.money)
+            if let biggest = overall.biggest {
+                StatRow("Biggest expense", "\(biggest.size.money) · \(biggest.merchant)")
+            }
+            if let top = overall.topCategory {
+                StatRow("Top category", "\(top.name) · \(overall.topCategoryShare.percent)")
+            }
+            StatRow(
+                "Online / in person",
+                "\(overall.onlineShare.percent) / \(overall.inPersonShare.percent)")
+            NavigationLink("Detailed Statistics", value: Route.stats(Scope()))
+        }
+    }
+
+    private func trend(_ months: [MonthTotal]) -> some View {
+        let change = changes(months)
+        return Section("Monthly Spending Trend") {
+            Chart(months) { month in
+                BarMark(
+                    x: .value("Month", month.month, unit: .month), y: .value("Total", month.total)
+                )
+                .foregroundStyle(Color.expense)
+            }
+            .moneyChart()
+            ForEach(months.reversed()) { month in
+                HStack {
+                    Text(month.label)
+                    Spacer()
+                    if let change = change[month.month] {
+                        // Spending more than the month before is the bad direction
+                        Text("\(change > 0 ? "▲" : "▼") \(abs(change).percent)")
+                            .font(.caption)
+                            .foregroundStyle(change > 0 ? Color.red : Color.green)
+                    }
+                    Text(month.total.money).monospacedDigit().frame(
+                        minWidth: 96, alignment: .trailing)
+                }
+            }
+        }
+    }
+
+    private func period(_ spending: [Transaction]) -> some View {
+        let dates = spending.map(\.date)
+        let start = from ?? dates.min() ?? .now
+        let end = to ?? dates.max() ?? .now
+        let selected = TransactionFilter(period: .range(start, end)).apply(spending)
+        return Section("Selected Period") {
+            DatePicker(
+                "From", selection: Binding(get: { start }, set: { from = $0 }),
+                displayedComponents: .date)
+            DatePicker(
+                "To", selection: Binding(get: { end }, set: { to = $0 }), displayedComponents: .date
+            )
+            StatRow("Total expenses", selected.total.money)
+            StatRow("Transactions", "\(selected.count)")
+            StatRow(
+                "Average per transaction",
+                selected.isEmpty ? "–" : (selected.total / Double(selected.count)).money)
+            if let biggest = selected.largest {
+                StatRow("Biggest expense", "\(biggest.size.money) · \(biggest.merchant)")
+            }
+        }
+    }
+
+    @ViewBuilder private func breakdown(_ spending: [Transaction]) -> some View {
+        let categories = spending.grouped(by: \.category).map(\.name)
+        let chosen =
+            category.flatMap { categories.contains($0) ? $0 : nil } ?? categories.first ?? ""
+        let rows = spending.filter { $0.category == chosen }
+        let months = rows.monthly()
+        Section("Category Breakdown") {
+            Picker("Category", selection: Binding(get: { chosen }, set: { category = $0 })) {
+                ForEach(categories, id: \.self) { Text("\(store.emoji(for: $0)) \($0)").tag($0) }
+            }
+            StatRow("Transactions", "\(rows.count)")
+            StatRow("Total", rows.total.money)
+            StatRow(
+                "Average per transaction",
+                rows.isEmpty ? "–" : (rows.total / Double(rows.count)).money)
+            StatRow(
+                "Average per active month",
+                months.isEmpty ? "–" : (rows.total / Double(months.count)).money)
+            StatRow("Largest", (rows.map(\.size).max() ?? 0).money)
+            StatRow("Smallest", (rows.map(\.size).min() ?? 0).money)
+            NavigationLink("Detailed Statistics", value: Route.stats(Scope(category: chosen)))
+        }
+        Section("Top Merchants in \(chosen)") {
+            ForEach(rows.grouped(by: \.merchant).prefix(10)) { merchant in
+                NavigationLink(
+                    value: Route.transactions(Scope(category: chosen, merchant: merchant.name))
+                ) {
+                    GroupRow(title: merchant.name, group: merchant, grandTotal: rows.total)
+                }
+            }
+        }
+        Section("\(chosen) by Month") {
+            Chart(months) { month in
+                BarMark(
+                    x: .value("Month", month.month, unit: .month), y: .value("Total", month.total)
+                )
+                .foregroundStyle(Color.expense)
+            }
+            .moneyChart()
+        }
+    }
+}
+
+struct IncomeTab: View {
+    @Environment(DataStore.self) private var store
+    @State private var filter = TransactionFilter()
+
+    var body: some View {
+        let filtered = filter.apply(store.income)
+        let total = filtered.total
+        NavigationStack {
+            List {
+                Section {
+                    FilterBar(filter: $filter, transactions: store.income)
+                }
+                Section {
+                    NavigationLink(value: Route.transactions(Scope(isIncome: true))) {
+                        GroupRow(
+                            title: "All",
+                            group: GroupTotal(name: "All", total: total, count: filtered.count),
+                            grandTotal: total)
+                    }
+                    ForEach(filtered.grouped(by: \.merchant)) { source in
+                        let official = store.isOfficial(source.name)
+                        NavigationLink(
+                            value: Route.transactions(Scope(merchant: source.name, isIncome: true))
+                        ) {
+                            GroupRow(
+                                title: official ? "⭐ \(source.name)" : source.name,
+                                group: source,
+                                grandTotal: total)
+                        }
+                        .swipeActions {
+                            Button(
+                                official ? "Unmark" : "Official",
+                                systemImage: official ? "star.slash" : "star"
+                            ) {
+                                store.setOfficial(!official, source: source.name)
+                            }
+                            .tint(.yellow)
+                        }
+                    }
+                } header: {
+                    Text("Sources")
+                } footer: {
+                    Text("Swipe a source to mark it as an official income source.")
+                }
+            }
+            .navigationTitle("Income & Inflows")
+            .toolbar { SyncMenu() }
+            .refreshable { await store.reload() }
+            .drillDown(into: filtered)
+        }
+    }
+}
+
+struct TrashTab: View {
+    @Environment(DataStore.self) private var store
+
+    var body: some View {
+        let trash = store.data.trash.sorted { $0.date > $1.date }
+        NavigationStack {
+            List(trash) { transaction in
+                NavigationLink(value: Route.detail(transaction.id)) {
+                    TransactionRow(
+                        transaction: transaction, emoji: store.emoji(for: transaction.category))
+                }
+                .swipeActions {
+                    Button("Restore", systemImage: "arrow.uturn.backward") {
+                        store.restore([transaction])
+                    }
+                    .tint(.green)
+                }
+            }
+            .overlay {
+                if trash.isEmpty {
+                    ContentUnavailableView(
+                        "Trash is empty", systemImage: "trash",
+                        description: Text("Swipe a transaction to move it here."))
+                }
+            }
+            .navigationTitle("Trash")
+            .toolbar { SyncMenu() }
+            .refreshable { await store.reload() }
+            .drillDown(into: trash)
+        }
+    }
+}
+
+/// Shows how fresh the data is and what is still waiting for the Mac.
+struct SyncMenu: View {
+    @Environment(DataStore.self) private var store
+    @State private var choosingFolder = false
+
+    var body: some View {
+        Menu {
+            Section {
+                Text(
+                    "Updated by your Mac \(store.data.exportedAt.formatted(.relative(presentation: .named)))"
+                )
+                if !store.pendingEdits.isEmpty {
+                    Text("\(store.pendingEdits.count) changes waiting for your Mac")
+                }
+                if let error = store.errorMessage {
+                    Text(error)
+                }
+            }
+            Button("Refresh", systemImage: "arrow.clockwise") {
+                Task { await store.reload() }
+            }
+            Button("Change Folder…", systemImage: "folder") { choosingFolder = true }
+        } label: {
+            Label("Sync", systemImage: icon)
+        }
+        .accessibilityIdentifier("syncMenu")
+        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+            if case .success(let url) = result {
+                Task { await store.useFolder(url) }
+            }
+        }
+    }
+
+    private var icon: String {
+        if store.errorMessage != nil { return "exclamationmark.icloud" }
+        return store.pendingEdits.isEmpty
+            ? "checkmark.icloud" : "arrow.triangle.2.circlepath.icloud"
+    }
+}
+
+/// Headings, bullets and inline styles: enough for the Mac's AI analysis.
+struct MarkdownText: View {
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(text.split(separator: "\n").enumerated()), id: \.offset) { _, line in
+                let line = line.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("#") {
+                    Text(inline(String(line.drop { $0 == "#" || $0 == " " })))
+                        .font(.headline)
+                        .padding(.top, 4)
+                } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("•")
+                        Text(inline(String(line.dropFirst(2))))
+                    }
+                } else {
+                    Text(inline(line))
+                }
+            }
+        }
+        .font(.subheadline)
+    }
+
+    private func inline(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text)) ?? AttributedString(text)
+    }
+}

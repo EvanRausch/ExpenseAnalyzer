@@ -33,6 +33,11 @@ env/
 *.swo
 *~
 
+# Xcode — per-person settings and build output
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 

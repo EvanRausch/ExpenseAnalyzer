@@ -50,6 +50,7 @@ flake8 .
 ```
 BudgetTracker/
 ├── src/              # Source code
+├── ios/              # iPhone app (open ios/ExpenseAnalyzer.xcodeproj in Xcode)
 ├── tests/            # Unit tests
 ├── data/             # Data files
 ├── docs/             # Documentation
