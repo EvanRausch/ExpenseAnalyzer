@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- iPhone version of icon.svg: the background fills the whole square (iOS rounds the corners itself) -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#22303d"/>
+      <stop offset="1" stop-color="#0f1419"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <g transform="translate(512 512) scale(1.243) translate(-512 -512)">
+    <g transform="rotate(-90 512 512)" fill="none" stroke-width="96">
+      <circle cx="512" cy="512" r="210" stroke="#4da3ff" stroke-dasharray="511.79 1319.47" stroke-dashoffset="0"/>
+      <circle cx="512" cy="512" r="210" stroke="#f28e2b" stroke-dasharray="313.87 1319.47" stroke-dashoffset="-527.79"/>
+      <circle cx="512" cy="512" r="210" stroke="#59a14f" stroke-dasharray="247.89 1319.47" stroke-dashoffset="-857.66"/>
+      <circle cx="512" cy="512" r="210" stroke="#e15759" stroke-dasharray="181.92 1319.47" stroke-dashoffset="-1121.55"/>
+    </g>
+
+    <g fill="#e6edf3">
+      <rect x="416" y="522" width="48" height="80" rx="10"/>
+      <rect x="488" y="472" width="48" height="130" rx="10"/>
+      <rect x="560" y="422" width="48" height="180" rx="10"/>
+    </g>
+  </g>
+</svg>

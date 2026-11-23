@@ -37,7 +37,10 @@ from google.genai import types as genai_types
 # Paths & runtime config
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).parent.parent
+# The server runs this for each person in a private folder laid out like this project
+PROJECT_ROOT = Path(
+    os.environ.get("BUDGETTRACKER_HOME") or Path(__file__).parent.parent
+)
 STATEMENTS_DIR = PROJECT_ROOT / "data" / "statements"
 OUTPUT_FILE = PROJECT_ROOT / "data" / "enriched_transactions.csv"
 CORRECTIONS_FILE = PROJECT_ROOT / "data" / "category_corrections.json"
@@ -579,16 +582,25 @@ def enrich_with_places(
 
     for i, desc in enumerate(in_person, 1):
         merchant = classifications[desc].get("merchant_name") or desc
+        quota_reached = False
         try:
             place = _search_place(merchant, city)
             cache[desc] = _extract_place(place) if place else _EMPTY_PLACE.copy()
             status = cache[desc]["place_name"] or "(no result)"
         except Exception as exc:
-            cache[desc] = _EMPTY_PLACE.copy()
+            # Left out of the cache so the lookup is retried on a later run
             status = f"ERROR: {exc}"
+            response = getattr(exc, "response", None)
+            quota_reached = response is not None and response.status_code == 429
         print(f"  [{i}/{len(in_person)}] {merchant[:50]:<50} → {status}")
         if progress_cb:
             progress_cb("Google Places", f"{i}/{len(in_person)} merchants")
+        if quota_reached:
+            print(
+                f"  Google Places quota reached — {len(in_person) - i + 1} "
+                "merchants left for a later run"
+            )
+            break
         if i < len(in_person):
             time.sleep(PLACES_RATE_LIMIT_SEC)
 
@@ -917,7 +929,7 @@ def _enrich_post_places(
 # Final categorization: dedicated Gemini pass using ALL enriched data
 # ---------------------------------------------------------------------------
 
-# Base known categories — matches budget_ui.py KNOWN_CATEGORIES
+# Base known categories — matches ledger.py KNOWN_CATEGORIES
 _KNOWN_CATEGORIES = [
     "Amazon Purchase",
     "Apple Services",

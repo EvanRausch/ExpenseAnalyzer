@@ -10,22 +10,16 @@ Category edits:
   - Update enriched_transactions.csv in-place
   - Append to data/category_corrections.json for future Gemini runs
 
+The rules and stored data the windows show live in ledger.py.
+
 Usage:
     python -m src.budget_ui
 """
 
 from __future__ import annotations
 
-import csv
 import difflib
-import json
-import os
 import re
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-import sys as _sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -99,167 +93,45 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-if getattr(_sys, "frozen", False):
-    # Running inside a PyInstaller bundle — use the fixed macOS app-support location.
-    # build_app.sh creates a symlink there pointing back to the project data/ folder.
-    PROJECT_ROOT = Path.home() / "Library" / "Application Support" / "BudgetTracker"
-else:
-    PROJECT_ROOT = Path(__file__).parent.parent
-
-OUTPUT_FILE = PROJECT_ROOT / "data" / "enriched_transactions.csv"
-CORRECTIONS_FILE = PROJECT_ROOT / "data" / "category_corrections.json"
-STATEMENTS_DIR = PROJECT_ROOT / "data" / "statements"
-AI_ANALYSIS_CACHE = PROJECT_ROOT / "data" / "ai_analysis_cache.json"
-TRASH_FILE = PROJECT_ROOT / "data" / "trash.json"
-USER_NOTES_FILE = PROJECT_ROOT / "data" / "user_notes.json"
-OFFICIAL_INCOME_FILE = PROJECT_ROOT / "data" / "official_income_sources.json"
-SUMMARY_DESC_FILE = PROJECT_ROOT / "data" / "summary_descriptions.json"
-
-# ---------------------------------------------------------------------------
-# Optional Gemini client (used by Statistics tab AI analysis + coverage label)
-# ---------------------------------------------------------------------------
-try:
-    from dotenv import load_dotenv as _load_dotenv
-    from google import genai as _genai
-
-    _load_dotenv(PROJECT_ROOT / ".env")
-    _GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-    _gemini_client = _genai.Client(api_key=_GEMINI_KEY) if _GEMINI_KEY else None
-except Exception:
-    _genai = None  # type: ignore
-    _gemini_client = None
-    _GEMINI_KEY = ""
-
-# ---------------------------------------------------------------------------
-# All known categories (used for drop-downs)
-# ---------------------------------------------------------------------------
-
-KNOWN_CATEGORIES = [
-    "Amazon Purchase",
-    "Apple Services",
-    "Streaming",
-    "Software/SaaS",
-    "Rent",
-    "Ride-sharing",
-    "Food Delivery",
-    "Groceries",
-    "Food & Dining",
-    "Pharmacy",
-    "Health & Medical",
-    "Dentist/Medical",
-    "Clothing & Fashion",
-    "Electronics",
-    "Entertainment",
-    "Transport",
-    "Automotive",
-    "Travel & Accommodation",
-    "Utilities",
-    "Telecom & Internet",
-    "Payroll / Income",
-    "Interac Transfer",
-    "Bill Payment",
-    "Investment",
-    "Insurance",
-    "Bank Fee",
-    "Government",
-    "Education",
-    "Charity",
-    "Sports & Fitness",
-    "Golf",
-    "Ski",
-    "Pets",
-    "Cat",
-    "Personal Care",
-    "ATM",
-    "Bars/Festivals/Alcohol",
-    "Weed",
-    "Hydro",
-    "e-Commerce / Online Shopping",
-    "Other",
-]
-
-# Emoji icons shown next to each category name in tables
-_CATEGORY_EMOJI: dict[str, str] = {
-    "Amazon Purchase": "📦",
-    "Apple Services": "🍎",
-    "Streaming": "🎬",
-    "Software/SaaS": "💻",
-    "Rent": "🏠",
-    "Ride-sharing": "🚗",
-    "Food Delivery": "🛵",
-    "Groceries": "🛒",
-    "Food & Dining": "🍴",
-    "Pharmacy": "💊",
-    "Health & Medical": "🏥",
-    "Dentist/Medical": "🦷",
-    "Clothing & Fashion": "👕",
-    "Electronics": "🔌",
-    "Entertainment": "🎨",
-    "Transport": "🚌",
-    "Automotive": "🚘",
-    "Travel & Accommodation": "🧳",
-    "Utilities": "💡",
-    "Telecom & Internet": "📶",
-    "Payroll / Income": "💰",
-    "Interac Transfer": "💸",
-    "Bill Payment": "📋",
-    "Investment": "📈",
-    "Insurance": "🛡️",
-    "Bank Fee": "🏦",
-    "Government": "🏛️",
-    "Education": "🎓",
-    "Charity": "💛",
-    "Sports & Fitness": "🏋️",
-    "Pets": "🐾",
-    "Personal Care": "🧴",
-    "e-Commerce / Online Shopping": "🛍️",
-    "Other": "💳",
-    # Extra categories found in data
-    "ATM": "🏧",
-    "Bars/Festivals/Alcohol": "🍺",
-    "Cat": "🐱",
-    "Golf": "⛳",
-    "Hydro": "⚡",
-    "Ski": "⛷️",
-    "Weed": "🌿",
-}
-
-
-def _is_emoji(s: str) -> bool:
-    """Return True if *s* looks like a valid emoji (1-2 codepoints, non-ASCII, non-text)."""
-    s = s.strip()
-    if not s or len(s) > 8:
-        return False
-    return any(ord(c) > 0x2000 for c in s)
-
-
-def _reload_ai_emojis() -> None:
-    """Merge emojis from category_emojis.json into _CATEGORY_EMOJI, validating each."""
-    try:
-        _emoji_file = PROJECT_ROOT / "data" / "category_emojis.json"
-        if _emoji_file.exists():
-            import json as _json_emoji
-
-            _ai_emojis = _json_emoji.loads(_emoji_file.read_text(encoding="utf-8"))
-            for _cat, _em in _ai_emojis.items():
-                if _cat not in _CATEGORY_EMOJI and _is_emoji(_em):
-                    _CATEGORY_EMOJI[_cat] = _em
-    except Exception:
-        pass
-
-
-_reload_ai_emojis()
-
-
-def _ensure_emoji(label: str) -> str:
-    """Return an emoji for *label*, generating one via Gemini only if needed.
-    Never blocks on Gemini during table rendering — uses 🏷️ as instant fallback.
-    """
-    if label in _CATEGORY_EMOJI and _is_emoji(_CATEGORY_EMOJI[label]):
-        return _CATEGORY_EMOJI[label]
-    # Immediate fallback — don't block the UI
-    _CATEGORY_EMOJI[label] = "🏷️"
-    return "🏷️"
+from src import plaid_sync
+from src.ledger import (
+    OUTPUT_FILE,
+    PHONE_FOLDER,
+    PROJECT_ROOT,
+    STATEMENTS_DIR,
+    _effective_category,
+    _ensure_emoji,
+    _format_date_display,
+    _gemini_client,
+    _gemini_spending_analysis,
+    _load_ai_cache,
+    _load_official_sources,
+    _load_summary_descs,
+    _parse_amount,
+    _reload_ai_emojis,
+    _save_ai_cache,
+    _save_official_sources,
+    _statements_fingerprint,
+    _tx_key,
+    all_categories,
+    apply_category_change,
+    apply_phone_edits,
+    compute_merchant_totals,
+    compute_stats_overall,
+    compute_totals,
+    compute_transaction_slices,
+    export_for_phone,
+    income_rows,
+    load_corrections,
+    load_csv,
+    load_trash,
+    row_date,
+    save_correction,
+    save_csv,
+    save_trash,
+    save_user_note,
+    spending_rows,
+)
 
 
 def _category_item(label: str) -> "QTableWidgetItem":
@@ -271,57 +143,6 @@ def _category_item(label: str) -> "QTableWidgetItem":
     item = QTableWidgetItem(display)
     item.setData(Qt.UserRole, label)
     return item
-
-
-# ---------------------------------------------------------------------------
-# Data layer
-# ---------------------------------------------------------------------------
-
-
-def load_csv(path: Path = OUTPUT_FILE) -> list[dict]:
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8", errors="replace") as f:
-        return list(csv.DictReader(f))
-
-
-def _statements_fingerprint() -> str:
-    """Return a stable string that changes when any statement file is added or removed."""
-    files = sorted(p.name for p in STATEMENTS_DIR.rglob("*.csv") if p.is_file())
-    return "|".join(files)
-
-
-def _load_ai_cache() -> tuple[str, str]:
-    """Return (fingerprint, analysis) from cache, or ('', '') if missing/invalid."""
-    try:
-        with AI_ANALYSIS_CACHE.open(encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("fingerprint", ""), data.get("analysis", "")
-    except Exception:
-        return "", ""
-
-
-def _save_ai_cache(fingerprint: str, analysis: str) -> None:
-    try:
-        with AI_ANALYSIS_CACHE.open("w", encoding="utf-8") as f:
-            json.dump(
-                {"fingerprint": fingerprint, "analysis": analysis},
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
-    except Exception:
-        pass
-
-
-def _load_summary_descs() -> dict:
-    """Return {categories: {...}, merchants: {...}} from summary_descriptions.json."""
-    try:
-        if SUMMARY_DESC_FILE.exists():
-            return json.loads(SUMMARY_DESC_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return {}
 
 
 def _restore_column_widths(
@@ -341,97 +162,6 @@ def _save_column_widths(header: "QHeaderView", key: str) -> None:
         s.setValue(f"colwidths/{key}/{col}", header.sectionSize(col))
 
 
-def save_csv(rows: list[dict], path: Path = OUTPUT_FILE) -> None:
-    if not rows:
-        return
-    # Exclude internal transient UI keys (prefixed "_") such as "_prev_category"
-    # stamped by TransactionModel.setData — extra keys on only *some* rows would
-    # cause csv.DictWriter to raise ValueError and truncate the file mid-write.
-    fieldnames = [k for k in rows[0].keys() if not k.startswith("_")]
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def load_trash() -> list[dict]:
-    """Return the list of trashed transaction dicts, or [] if the file is missing/corrupt."""
-    try:
-        with TRASH_FILE.open(encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-def save_trash(rows: list[dict]) -> None:
-    """Persist the trash list to TRASH_FILE."""
-    try:
-        TRASH_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with TRASH_FILE.open("w", encoding="utf-8") as f:
-            json.dump(rows, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-
-def _tx_key(row: dict) -> tuple:
-    """Return a composite identity key for a transaction row."""
-    return (
-        row.get("date", ""),
-        row.get("amount", ""),
-        row.get("description", ""),
-        row.get("source_file", ""),
-    )
-
-
-def load_corrections(path: Path = CORRECTIONS_FILE) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def save_correction(
-    description: str, new_category: str, path: Path = CORRECTIONS_FILE
-) -> None:
-    corrections = load_corrections(path)
-    corrections[description] = new_category
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(corrections, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-
-def load_user_notes(path: Path = USER_NOTES_FILE) -> dict[str, str]:
-    """Return {description: notes_text} from user_notes.json."""
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def save_user_note(description: str, notes: str, path: Path = USER_NOTES_FILE) -> None:
-    """Persist a user note keyed by raw bank description. Removes the entry when notes is empty."""
-    data = load_user_notes(path)
-    if notes:
-        data[description] = notes
-    else:
-        data.pop(description, None)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _parse_amount(s: str) -> float:
-    try:
-        return float(str(s).replace(",", ".").strip())
-    except (ValueError, TypeError):
-        return 0.0
-
-
 def _date_bounds(rows: list[dict]) -> tuple[QDate, QDate]:
     """Return (min_date, max_date) across all rows; falls back to sensible defaults."""
     dates = [d for r in rows if (d := _parse_date(r)) is not None]
@@ -444,323 +174,9 @@ def _date_bounds(rows: list[dict]) -> tuple[QDate, QDate]:
 
 
 def _parse_date(row: dict) -> QDate | None:
-    """Best-effort date parse from the 'date' field of either CSV format."""
-    date_str = (row.get("date") or "").strip()
-    if not date_str:
-        return None
-    # Debit: "YYYY/MM/DD" or "YYYY-MM-DD"
-    for fmt_try in [
-        lambda s: QDate.fromString(s, "yyyy/MM/dd"),
-        lambda s: QDate.fromString(s, "yyyy-MM-dd"),
-    ]:
-        d = fmt_try(date_str)
-        if d.isValid():
-            return d
-    # Credit: "DD MM" with year inferred from source_file
-    parts = date_str.split()
-    if len(parts) == 2:
-        src = row.get("source_file", "")
-        year_m = re.search(r"(20\d{2})", src)
-        year = int(year_m.group(1)) if year_m else QDate.currentDate().year()
-        try:
-            d = QDate(year, int(parts[1]), int(parts[0]))
-            if d.isValid():
-                # If the date is in the future, it likely belongs to the prior year
-                if d > QDate.currentDate():
-                    d = QDate(year - 1, int(parts[1]), int(parts[0]))
-                return d if d.isValid() else None
-        except (ValueError, TypeError):
-            return None
-    return None
-
-
-_MONTH_ABBREVS = [
-    "",
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-]
-
-
-def _format_date_display(raw: str, source_file: str = "") -> str:
-    """Convert a raw CSV date string to a friendly 'Jan 15, 2024' display string."""
-    raw = raw.strip()
-    if not raw:
-        return raw
-    # Debit: YYYY/MM/DD or YYYY-MM-DD
-    m = re.match(r"^(\d{4})[/-](\d{2})[/-](\d{2})$", raw)
-    if m:
-        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if 1 <= mo <= 12:
-            return f"{_MONTH_ABBREVS[mo]} {d:02d}, {y}"
-        return raw
-    # Credit: "DD MM" (day and month number, year from source_file)
-    m2 = re.match(r"^(\d{1,2})\s+(\d{1,2})$", raw)
-    if m2:
-        day, month = int(m2.group(1)), int(m2.group(2))
-        year_m = re.search(r"(20\d{2})", source_file)
-        year = int(year_m.group(1)) if year_m else 0
-        if 1 <= month <= 12:
-            suffix = f", {year}" if year else ""
-            return f"{_MONTH_ABBREVS[month]} {day:02d}{suffix}"
-    return raw
-
-
-# ---------------------------------------------------------------------------
-# Row classification helpers
-# ---------------------------------------------------------------------------
-
-
-def _is_cc_bill_payment(row: dict) -> bool:
-    """Debit Bill Payment to pay off the Desjardins Visa credit card."""
-    if row.get("account_type") != "debit":
-        return False
-    merchant = (row.get("gemini_merchant") or "").lower()
-    return (
-        "visa" in merchant or "desjardins" in merchant or "cash back" in merchant
-    ) and row.get("gemini_category") == "Bill Payment"
-
-
-def _is_garbled_credit_transfer(row: dict) -> bool:
-    """Credit PDF header rows misread as Interac Transfer."""
-    return (
-        row.get("account_type") == "credit"
-        and row.get("gemini_merchant") == "Interac Transfer"
-    )
-
-
-def _is_incoming_transfer(row: dict) -> bool:
-    """Interac e-Transfer received (amount is negative in debit format)."""
-    return (
-        row.get("gemini_category") == "Interac Transfer"
-        and _parse_amount(row.get("amount", 0)) < 0
-        and row.get("account_type") == "debit"
-    )
-
-
-def _is_income(row: dict) -> bool:
-    """Any transaction where money came *in* (negative amount on debit side)."""
-    if row.get("account_type") == "debit" and _parse_amount(row.get("amount", 0)) < 0:
-        return True
-    return False
-
-
-def _should_exclude_entirely(row: dict) -> bool:
-    """CC repayments and garbled credit rows — remove from all views."""
-    return _is_cc_bill_payment(row) or _is_garbled_credit_transfer(row)
-
-
-def spending_rows(rows: list[dict]) -> list[dict]:
-    """Rows that represent actual money going out (no income, no CC repayments, no noise)."""
-    return [r for r in rows if not _should_exclude_entirely(r) and not _is_income(r)]
-
-
-def income_rows(rows: list[dict]) -> list[dict]:
-    """Income and positive inflows (payroll + incoming transfers)."""
-    return [r for r in rows if not _should_exclude_entirely(r) and _is_income(r)]
-
-
-def visible_rows(rows: list[dict]) -> list[dict]:
-    """All rows except noise (CC repayments + garbled credit transfers)."""
-    return [r for r in rows if not _should_exclude_entirely(r)]
-
-
-# Interac transfer recipient name substrings (lowercase) that map to Rent
-_RENT_INTERAC_NAMES: frozenset[str] = frozenset({"eugen", "eugen rus", "razvan"})
-
-
-def _effective_category(row: dict) -> str:
-    """Return the display category; maps known rent payees to 'Rent' and
-    groups all other Interac e-transfers under 'Interac Transfer'."""
-    cat = (row.get("gemini_category") or "Other").strip() or "Other"
-    if cat == "Interac Transfer":
-        merchant = (row.get("gemini_merchant") or "").strip()
-        if merchant and merchant != "Interac Transfer":
-            if any(name in merchant.lower() for name in _RENT_INTERAC_NAMES):
-                return "Rent"
-        return "Interac Transfer"
-    return cat
-
-
-def _get_known_categories() -> list[str]:
-    """Return the user's custom category list if it exists, else the hardcoded default."""
-    from src.enrich_transactions import load_custom_categories
-
-    return load_custom_categories() or list(KNOWN_CATEGORIES)
-
-
-def all_categories(rows: list[dict]) -> list[str]:
-    """Sorted list of all categories present in the data, plus known categories."""
-    seen = set(_get_known_categories())
-    for row in rows:
-        cat = (row.get("gemini_category") or "").strip()
-        if cat:
-            seen.add(cat)
-    return sorted(seen)
-
-
-def compute_totals(rows: list[dict]) -> dict[str, dict]:
-    """Return {category: {count, total, abs_total}} sorted by abs_total desc.
-
-    Outgoing Interac transfers are split per recipient; transfers to known
-    rent payees (e.g. Eugen Rus) are folded into the "Rent" category.
-    """
-    acc: dict[str, dict] = defaultdict(
-        lambda: {"count": 0, "total": 0.0, "abs_total": 0.0}
-    )
-    for row in rows:
-        cat = _effective_category(row)
-        amt = _parse_amount(row.get("amount", 0))
-        acc[cat]["count"] += 1
-        acc[cat]["total"] += amt
-        acc[cat]["abs_total"] += abs(amt)
-    return dict(sorted(acc.items(), key=lambda kv: kv[1]["abs_total"], reverse=True))
-
-
-def compute_merchant_totals(rows: list[dict]) -> dict[str, dict]:
-    """Group rows by merchant → {merchant: {count, total, abs_total}} sorted by abs_total."""
-    acc: dict[str, dict] = defaultdict(
-        lambda: {"count": 0, "total": 0.0, "abs_total": 0.0}
-    )
-    for row in rows:
-        merchant = (
-            row.get("gemini_merchant") or row.get("description") or "Unknown"
-        ).strip() or "Unknown"
-        amt = _parse_amount(row.get("amount", 0))
-        acc[merchant]["count"] += 1
-        acc[merchant]["total"] += amt
-        acc[merchant]["abs_total"] += abs(amt)
-    return dict(sorted(acc.items(), key=lambda kv: kv[1]["abs_total"], reverse=True))
-
-
-def compute_transaction_slices(rows: list[dict]) -> dict[str, dict]:
-    """Return {label: {count, total, abs_total, _row}} for each individual
-    transaction.  Labels are "{date} \u2014 {merchant/desc}" and deduplicated
-    with a numeric suffix when multiple transactions share the same label.
-    Sorted by abs_total descending.
-    """
-    result: dict[str, dict] = {}
-    label_counts: dict[str, int] = {}
-    for row in rows:
-        amt = _parse_amount(row.get("amount", 0))
-        merchant = (
-            row.get("gemini_merchant") or row.get("description") or "Unknown"
-        ).strip() or "Unknown"
-        date = (row.get("date") or "").strip()
-        base_label = f"{_format_date_display(date, row.get('source_file') or '')} \u2014 {merchant}"
-        seen = label_counts.get(base_label, 0)
-        label_counts[base_label] = seen + 1
-        label = base_label if seen == 0 else f"{base_label} ({seen + 1})"
-        result[label] = {"count": 1, "total": amt, "abs_total": abs(amt), "_row": row}
-    return dict(sorted(result.items(), key=lambda kv: kv[1]["abs_total"], reverse=True))
-
-
-def compute_stats(rows: list[dict], category: str) -> dict:
-    filtered = [
-        r for r in rows if (r.get("gemini_category") or "Other").strip() == category
-    ]
-    if not filtered:
-        return {}
-    amounts = [_parse_amount(r.get("amount", 0)) for r in filtered]
-    merchant_totals: dict[str, float] = defaultdict(float)
-    for r in filtered:
-        m = (
-            r.get("gemini_merchant")
-            or r.get("place_name")
-            or r.get("description")
-            or "Unknown"
-        ).strip()
-        merchant_totals[m] += abs(_parse_amount(r.get("amount", 0)))
-    top_merchants = sorted(merchant_totals.items(), key=lambda kv: kv[1], reverse=True)[
-        :10
-    ]
-    return {
-        "count": len(amounts),
-        "total": sum(amounts),
-        "avg": sum(amounts) / len(amounts),
-        "max": max(amounts),
-        "min": min(amounts),
-        "top_merchants": top_merchants,
-    }
-
-
-def compute_stats_overall(rows: list[dict]) -> dict:
-    """Compute high-level statistics across all rows.
-
-    Returns a dict with keys:
-      total_expense, total_income, net, n_months, avg_monthly_expense,
-      top_category, top_category_pct, mode_counts, biggest_txn_amount,
-      biggest_txn_merchant, monthly (dict month_str→expense_total)
-    """
-    spend = spending_rows(rows)
-    inc = income_rows(rows)
-
-    total_expense = sum(abs(_parse_amount(r.get("amount", 0))) for r in spend)
-    total_income = sum(abs(_parse_amount(r.get("amount", 0))) for r in inc)
-    net = total_income - total_expense
-
-    # Monthly breakdown of expenses
-    monthly: dict[str, float] = defaultdict(float)
-    for r in spend:
-        d = _parse_date(r)
-        if d:
-            key = d.toString("yyyy-MM")
-            monthly[key] += abs(_parse_amount(r.get("amount", 0)))
-
-    n_months = len(monthly)
-    avg_monthly_expense = (sum(monthly.values()) / n_months) if n_months else 0.0
-
-    # Top category
-    cat_totals: dict[str, float] = defaultdict(float)
-    for r in spend:
-        cat_totals[_effective_category(r)] += abs(_parse_amount(r.get("amount", 0)))
-    top_category = max(cat_totals, key=lambda k: cat_totals[k]) if cat_totals else ""
-    top_category_pct = (
-        (cat_totals[top_category] / total_expense * 100) if total_expense else 0.0
-    )
-
-    # Payment mode split
-    mode_counts: dict[str, int] = defaultdict(int)
-    for r in spend:
-        mode_counts[(r.get("purchase_mode") or "unknown").strip()] += 1
-
-    # Biggest single expense
-    biggest = max(
-        spend, key=lambda r: abs(_parse_amount(r.get("amount", 0))), default=None
-    )
-    biggest_txn_amount = (
-        abs(_parse_amount(biggest.get("amount", 0))) if biggest else 0.0
-    )
-    biggest_txn_merchant = (
-        (
-            biggest.get("gemini_merchant") or biggest.get("description") or "Unknown"
-        ).strip()
-        if biggest
-        else ""
-    )
-
-    return {
-        "total_expense": total_expense,
-        "total_income": total_income,
-        "net": net,
-        "n_months": n_months,
-        "avg_monthly_expense": avg_monthly_expense,
-        "top_category": top_category,
-        "top_category_pct": top_category_pct,
-        "mode_counts": dict(mode_counts),
-        "biggest_txn_amount": biggest_txn_amount,
-        "biggest_txn_merchant": biggest_txn_merchant,
-        "monthly": dict(sorted(monthly.items())),
-    }
+    """The row's date for Qt widgets, or None if it cannot be read."""
+    day = row_date(row)
+    return QDate(day.year, day.month, day.day) if day else None
 
 
 def _build_tooltip(
@@ -2302,6 +1718,35 @@ class _EnrichWorker(QThread):
             self.finished_err.emit(str(exc))
 
 
+class _PlaidWorker(QThread):
+    """Optionally link a bank through Plaid, then fetch its transactions."""
+
+    link_ready = Signal(str)  # URL of the bank login page
+    finished_ok = Signal(int, bool)  # (new transactions, full history loaded)
+    cancelled = Signal()
+    finished_err = Signal(str)
+
+    def __init__(self, link: bool, parent=None):
+        super().__init__(parent)
+        self.link = link
+
+    def run(self):
+        try:
+            if self.link:
+                token, url = plaid_sync.create_link_session()
+                self.link_ready.emit(url)
+                linked = plaid_sync.wait_for_link(token, self.isInterruptionRequested)
+                if linked is None:
+                    self.cancelled.emit()
+                    return
+                plaid_sync.add_item(*linked)
+            result = plaid_sync.sync(self.isInterruptionRequested)
+            self.finished_ok.emit(result.new_rows, result.complete)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[BudgetTracker] Bank sync failed: {exc}")
+            self.finished_err.emit(str(exc))
+
+
 class _RecatWorker(QThread):
     """Recategorize a specific set of descriptions in a background thread."""
 
@@ -2364,93 +1809,6 @@ def _gemini_coverage_summary() -> str:
         return (resp.text or "").strip()
     except Exception:
         return ""
-
-
-def _gemini_spending_analysis(rows: list[dict]) -> str:
-    """Ask Gemini for a structured expense analysis. Income is intentionally excluded."""
-    if not _gemini_client:
-        return "No Gemini API key configured."
-
-    stats = compute_stats_overall(rows)
-    spend = spending_rows(rows)
-
-    # Top 10 categories by spend
-    cat_totals: dict[str, float] = defaultdict(float)
-    for r in spend:
-        cat_totals[_effective_category(r)] += abs(_parse_amount(r.get("amount", 0)))
-    top_cats = sorted(cat_totals.items(), key=lambda kv: kv[1], reverse=True)[:10]
-
-    # Top 10 merchants by spend
-    merch_totals: dict[str, float] = defaultdict(float)
-    for r in spend:
-        m = (r.get("gemini_merchant") or r.get("description") or "Unknown").strip()
-        merch_totals[m] += abs(_parse_amount(r.get("amount", 0)))
-    top_merch = sorted(merch_totals.items(), key=lambda kv: kv[1], reverse=True)[:10]
-
-    monthly = stats["monthly"]
-    monthly_lines = "\n".join(f"  {m}: ${v:,.0f}" for m, v in sorted(monthly.items()))
-    cats_lines = "\n".join(f"  {c}: ${t:,.0f}" for c, t in top_cats)
-    merch_lines = "\n".join(f"  {m}: ${t:,.0f}" for m, t in top_merch)
-    mode_lines = "\n".join(
-        f"  {mode}: {cnt}" for mode, cnt in stats["mode_counts"].items()
-    )
-
-    summary = (
-        f"EXPENSE SUMMARY (income data is incomplete and excluded)\n"
-        f"Period: {stats['n_months']} months\n"
-        f"Total expenses: ${stats['total_expense']:,.2f}\n"
-        f"Avg monthly spend: ${stats['avg_monthly_expense']:,.2f}\n"
-        f"Biggest single expense: ${stats['biggest_txn_amount']:,.2f} at {stats['biggest_txn_merchant']}\n"
-        f"\nMonthly expenses:\n{monthly_lines}\n"
-        f"\nTop categories:\n{cats_lines}\n"
-        f"\nTop merchants:\n{merch_lines}\n"
-        f"\nPurchase modes:\n{mode_lines}\n"
-    )
-
-    prompt = (
-        "You are reviewing someone's expense data from their bank statements.\n"
-        "IMPORTANT: Income data is incomplete and not provided — do NOT comment on savings rate, "
-        "net balance, or income. Focus exclusively on spending behaviour.\n\n"
-        "Based on the expense data below, produce a short structured analysis with these sections:\n"
-        "## Monthly Trend — 2-3 bullet points on how spending evolved month to month\n"
-        "## Top Categories — brief observation on the biggest spend categories\n"
-        "## Notable Merchants — call out any merchants that stand out (frequency or amount)\n"
-        "## Habits & Patterns — 2-3 observations about spending habits (online vs in-person, recurring vs one-off, etc.)\n"
-        "## Suggestions — 2-3 concrete, actionable suggestions to reduce or optimise spending\n\n"
-        "Be concise. Use bullet points under each heading. Do not invent data.\n\n"
-        + summary
-    )
-
-    try:
-        resp = _gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-        )
-        return (resp.text or "").strip()
-    except Exception as exc:
-        return f"Analysis failed: {exc}"
-
-
-def _pick_emoji_for_category(name: str) -> str:
-    """Ask Gemini to pick one emoji for a brand-new category name.
-    Falls back to 🏷️ if Gemini is unavailable or the response is unusable.
-    """
-    if _gemini_client:
-        try:
-            prompt = (
-                f"Pick exactly ONE emoji that best represents the personal-finance "
-                f'spending category "{name}". Reply with only the single emoji, nothing else.'
-            )
-            resp = _gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-            )
-            emoji = (resp.text or "").strip()
-            if emoji and len(emoji) <= 8:
-                return emoji
-        except Exception:
-            pass
-    return "🏷️"
 
 
 # ---------------------------------------------------------------------------
@@ -3914,36 +3272,12 @@ class TransactionsTab(QWidget):
             return
         if col != COL_CATEGORY:
             return
-        row_idx = top_left.row()
-        row_data = self._model.get_row(row_idx)
+        row_data = self._model.get_row(top_left.row())
         new_cat = row_data.get("gemini_category", "")
         desc = row_data.get("description", "")
-        merchant = (row_data.get("gemini_merchant") or "").strip()
         old_cat = row_data.get("_prev_category", "")
-
-        # Find all rows with the same merchant (and originally same category) that
-        # haven't already been manually overridden, and bulk-update them.
-        # Exception: transfers (Interac e-transfers, PayPal, etc.) are never bulk-updated
-        # because each transfer to the same person can be for a completely different purpose.
-        similar: list[str] = []
-        is_transfer = row_data.get("purchase_mode", "") == "transfer"
-        if merchant and not is_transfer:
-            for r in self._all_rows:
-                if r is row_data:
-                    continue
-                r_merchant = (r.get("gemini_merchant") or "").strip()
-                r_cat = r.get("gemini_category", "")
-                if r_merchant == merchant and r_cat != new_cat:
-                    # Only auto-update rows that are in the same old category
-                    # (or if we don't know the old category, match all same merchant)
-                    if not old_cat or r_cat == old_cat:
-                        r["gemini_category"] = new_cat
-                        save_correction(r.get("description", ""), new_cat)
-                        similar.append(r.get("description", merchant)[:40])
-
-        # Persist to CSV and corrections file
+        similar = apply_category_change(self._all_rows, row_data, new_cat, old_cat)
         save_csv(self._all_rows)
-        save_correction(desc, new_cat)
 
         # Refresh table to reflect bulk changes
         if similar:
@@ -4441,26 +3775,6 @@ class StatisticsTab(QWidget):
         fp_cached, analysis_cached = _load_ai_cache()
         if not analysis_cached or fp_cached != _statements_fingerprint():
             self._generate_ai_analysis()
-
-
-# ---------------------------------------------------------------------------
-# Income Tab helpers
-# ---------------------------------------------------------------------------
-
-
-def _load_official_sources() -> set:
-    """Return set of source names marked as official income sources."""
-    try:
-        with open(OFFICIAL_INCOME_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return set()
-
-
-def _save_official_sources(sources: set) -> None:
-    """Persist set of official income source names to JSON."""
-    with open(OFFICIAL_INCOME_FILE, "w", encoding="utf-8") as f:
-        json.dump(sorted(sources), f, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -6004,6 +5318,7 @@ class MainWindow(QMainWindow):
         self._reload_timer.setInterval(2000)  # 2 s debounce after CSV write
         self._reload_timer.timeout.connect(self._load)
         self._enriching = False  # True while background enrichment is running
+        self._plaid_worker: _PlaidWorker | None = None
         self._watcher = QFileSystemWatcher(self)
         self._watcher.fileChanged.connect(self._on_csv_changed)
 
@@ -6017,6 +5332,16 @@ class MainWindow(QMainWindow):
         for _d in (STATEMENTS_DIR / "credit", STATEMENTS_DIR / "debit"):
             _d.mkdir(parents=True, exist_ok=True)
             self._watcher.addPath(str(_d))
+
+        # Changes made in the iPhone app arrive as a file in the iCloud folder
+        self._phone_timer = QTimer(self)
+        self._phone_timer.setSingleShot(True)
+        self._phone_timer.setInterval(1500)
+        self._phone_timer.timeout.connect(self._apply_phone_edits)
+        self._phone_watcher = QFileSystemWatcher(self)
+        self._phone_watcher.directoryChanged.connect(
+            lambda _path: self._phone_timer.start()
+        )
 
         self._build_menu()
         self._build_ui()
@@ -6035,6 +5360,16 @@ class MainWindow(QMainWindow):
         reenrich_action.setShortcut("Ctrl+Shift+R")
         reenrich_action.triggered.connect(self._reenrich_from_scratch)
         file_menu.addAction(reenrich_action)
+
+        file_menu.addSeparator()
+
+        connect_bank_action = QAction("Connect &Bank…", self)
+        connect_bank_action.triggered.connect(self._connect_bank)
+        file_menu.addAction(connect_bank_action)
+
+        sync_bank_action = QAction("S&ync Bank Now", self)
+        sync_bank_action.triggered.connect(self._sync_bank)
+        file_menu.addAction(sync_bank_action)
 
         file_menu.addSeparator()
 
@@ -6273,6 +5608,110 @@ class MainWindow(QMainWindow):
         self._enrich_worker = worker
         worker.start()
 
+    @staticmethod
+    def _linked_banks() -> list[str]:
+        try:
+            return plaid_sync.linked_banks()
+        # A bad Plaid setting must not stop the app opening
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _plaid_busy(self) -> bool:
+        return self._plaid_worker is not None and self._plaid_worker.isRunning()
+
+    def _connect_bank(self) -> None:
+        """Open the Plaid bank login page in the browser, then import the transactions."""
+        if self._plaid_busy():
+            if self._plaid_worker.link:
+                reply = QMessageBox.question(
+                    self,
+                    "Bank login in progress",
+                    "A bank login page is already open in your browser.\n\nCancel it?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply == QMessageBox.Yes:
+                    self._plaid_worker.requestInterruption()
+            return
+        banks = self._linked_banks()
+        if banks:
+            reply = QMessageBox.question(
+                self,
+                "Bank already connected",
+                f"{', '.join(banks)} is already connected. Connecting the same bank "
+                "twice creates a duplicate connection.\n\nConnect another bank?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        self._start_plaid(link=True)
+
+    def _sync_bank(self) -> None:
+        if self._plaid_busy():
+            return
+        if not self._linked_banks():
+            QMessageBox.information(
+                self, "No bank connected", "Use File > Connect Bank first."
+            )
+            return
+        self._start_plaid(link=False)
+
+    def _start_plaid(self, link: bool, quiet: bool = False) -> None:
+        """Run a bank link/sync in the background, then enrich whatever it brought in."""
+        worker = _PlaidWorker(link, parent=self)
+        self.statusBar().showMessage(
+            (
+                "Opening the bank login page…"
+                if link
+                else "🔄 Checking the bank for new transactions…"
+            ),
+            0,
+        )
+
+        def _enrich_if_needed() -> None:
+            if self._statements_newer_than_output():
+                self._enrich_timer.stop()
+                self._run_enrich()
+
+        def _on_link_ready(url: str) -> None:
+            QDesktopServices.openUrl(QUrl(url))
+            self.statusBar().showMessage(
+                "Finish the bank login in your browser — transactions import automatically.",
+                0,
+            )
+
+        def _on_done(new_rows: int, complete: bool) -> None:
+            msg = f"✓ Bank sync: {new_rows} new transaction(s)."
+            if plaid_sync.environment() != "production":
+                msg += " Practice mode: saved separately, not added to your data."
+            if not complete:
+                msg += " Older history is still loading; sync again in a few minutes."
+            self.statusBar().showMessage(msg, 15_000)
+            _enrich_if_needed()
+
+        def _on_error(msg: str) -> None:
+            self.statusBar().showMessage(f"⚠️ Bank sync failed: {msg}", 0)
+            if not quiet:
+                QMessageBox.warning(self, "Bank sync failed", msg)
+            _enrich_if_needed()
+
+        worker.link_ready.connect(_on_link_ready)
+        worker.finished_ok.connect(_on_done)
+        worker.finished_err.connect(_on_error)
+        worker.cancelled.connect(
+            lambda: self.statusBar().showMessage("Bank login cancelled.", 5000)
+        )
+        self._plaid_worker = worker
+        worker.start()
+
+    def closeEvent(self, event) -> None:
+        # A bank login can wait on the browser for minutes; stop it before the window goes
+        if self._plaid_busy():
+            self._plaid_worker.requestInterruption()
+            self._plaid_worker.wait(5000)
+        super().closeEvent(event)
+
     def _update_status_bar(self) -> None:
         """Show the correct status bar message depending on current state."""
         if self._enriching:
@@ -6309,11 +5748,15 @@ class MainWindow(QMainWindow):
         if not rows:
             self.statusBar().showMessage(f"No data found at {OUTPUT_FILE}", 0)
             return
+        export_for_phone(rows)
 
         if self._summary_tab is None:
             # First load — create tabs
             # Kick off enrichment immediately if statements are newer than the cached CSV
-            if self._statements_newer_than_output():
+            if self._linked_banks():
+                # Enrichment follows once the bank's new transactions are in
+                self._start_plaid(link=False, quiet=True)
+            elif self._statements_newer_than_output():
                 self._run_enrich()
             self._summary_tab = SummaryTab(rows)
             self._txn_tab = TransactionsTab(rows)
@@ -6340,6 +5783,25 @@ class MainWindow(QMainWindow):
             self._trash_tab.refresh()
 
         self._update_status_bar()
+        self._apply_phone_edits()
+        if PHONE_FOLDER.is_dir() and not self._phone_watcher.directories():
+            self._phone_watcher.addPath(str(PHONE_FOLDER))
+
+    def _apply_phone_edits(self) -> None:
+        """Make the changes requested from the iPhone app and show them in every tab."""
+        if self._summary_tab is None:
+            return
+        applied = apply_phone_edits(self._rows)
+        if not applied:
+            return
+        save_csv(self._rows)
+        self._income_tab._official_sources = _load_official_sources()
+        self._all_tabs_update()
+        self._trash_tab.refresh()
+        self.statusBar().showMessage(
+            f"{applied} change{'s' if applied > 1 else ''} from the iPhone app applied.",
+            7000,
+        )
 
     def _on_tab_changed(self, index: int) -> None:
         """Reset drill-downs when leaving Summary or Transactions tabs."""
