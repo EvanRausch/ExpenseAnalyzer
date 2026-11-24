@@ -127,11 +127,22 @@ PERSONAL_TABLES = (Login, Transaction, Document, Bank, Job)
 def make_engine(url: str | None = None) -> Engine:
     """Open the database, creating the file and the tables on first use."""
     url = url or os.environ.get("DATABASE_URL") or DEFAULT_DATABASE_URL
-    # Requests and bank syncs run on different threads, which SQLite refuses by default
-    options = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    engine = create_engine(url, connect_args=options)
+    if url.startswith("sqlite"):
+        # Requests and bank syncs run on different threads, which SQLite refuses by default
+        engine = create_engine(url, connect_args={"check_same_thread": False})
+    else:
+        # Cloud SQL closes idle connections; pre-ping replaces a closed one instead of failing
+        engine = create_engine(_with_driver(url), pool_pre_ping=True)
     Base.metadata.create_all(engine)
     return engine
+
+
+def _with_driver(url: str) -> str:
+    """Make a plain postgres:// or postgresql:// address use the installed driver (psycopg 3)."""
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix) :]
+    return url
 
 
 # ---------------------------------------------------------------------------

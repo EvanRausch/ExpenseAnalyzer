@@ -17,6 +17,7 @@ import json
 import os
 import threading
 import time
+from contextlib import asynccontextmanager
 from typing import Callable, Literal
 
 import jwt
@@ -122,8 +123,21 @@ def create_app(
 ) -> FastAPI:
     """Build the API. `spawn` runs a bank sync without making the request wait."""
     engine = engine or make_engine()
+    # People whose sync this process is running right now
+    syncing: set[str] = set()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        # Cloud Run stops the server a while after the last request, sync or no sync
+        pipeline.interrupt_jobs(engine, set(syncing))
+
     app = FastAPI(
-        title="ExpenseAnalyzer", docs_url=None, redoc_url=None, openapi_url=None
+        title="ExpenseAnalyzer",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
     )
     bearer = HTTPBearer(auto_error=False)
 
@@ -143,7 +157,15 @@ def create_app(
     def start_sync(user_id: str) -> bool:
         if not pipeline.start_job(engine, user_id):
             return False
-        spawn(lambda: pipeline.run_job(engine, user_id))
+
+        def work() -> None:
+            syncing.add(user_id)
+            try:
+                pipeline.run_job(engine, user_id)
+            finally:
+                syncing.discard(user_id)
+
+        spawn(work)
         return True
 
     def status_of(db: Session, user: User) -> dict:
@@ -162,7 +184,8 @@ def create_app(
     def bank_service_failed(request: Request, exc: plaid_sync.PlaidError):
         return JSONResponse({"detail": f"The bank service reported: {exc}"}, 502)
 
-    @app.get("/healthz")
+    # Not /healthz: Google's front end answers that path itself, so it never reaches us
+    @app.get("/health")
     def health():
         return {"ok": True}
 
@@ -171,15 +194,28 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.post("/v1/auth/apple")
-    def sign_in(body: AppleSignIn, db: Session = Depends(database)):
+    def sign_in(
+        body: AppleSignIn,
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+        db: Session = Depends(database),
+    ):
         try:
             apple_id = apple_user_id(body.identityToken)
         except jwt.PyJWTError:
             raise HTTPException(401, "Apple did not confirm this sign-in") from None
         user = db.scalar(select(User).where(User.apple_id == apple_id))
         if user is None:
-            user = add_user(db, apple_id)
-            db.flush()
+            # A device signed in with a token from `server.cli` (an account without an
+            # Apple id) keeps its data: the Apple sign-in is attached to that account
+            current = (
+                user_for_token(db, credentials.credentials) if credentials else None
+            )
+            if current is not None and current.apple_id is None:
+                user = current
+                user.apple_id = apple_id
+            else:
+                user = add_user(db, apple_id)
+                db.flush()
         token = add_login(db, user)
         db.commit()
         return {"token": token}

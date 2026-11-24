@@ -1,0 +1,20 @@
+# What `gcloud run deploy --source .` is allowed to upload to Google Cloud.
+#
+# Everything is kept out unless named below, so the personal data (data/), the keys (.env),
+# the private notes (docs/), the Mac app and the iPhone app never leave this computer.
+*
+
+!Dockerfile
+!.gcloudignore
+
+!server/
+!server/**
+
+!src/
+src/*
+!src/__init__.py
+!src/ledger.py
+!src/plaid_sync.py
+!src/enrich_transactions.py
+
+**/__pycache__/

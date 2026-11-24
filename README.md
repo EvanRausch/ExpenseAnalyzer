@@ -45,11 +45,24 @@ To lint code:
 flake8 .
 ```
 
+### Server
+
+The iPhone app talks to the server in `server/`, which syncs the bank through Plaid and keeps each person's data in a database.
+
+```bash
+python -m server.cli serve          # run it locally on http://127.0.0.1:8000 (file database)
+./deploy/cloud.sh deploy            # build and publish it on Google Cloud Run (see ./deploy/cloud.sh)
+```
+
+Only `server/`, the shared parts of `src/` and the `Dockerfile` are uploaded; `.gcloudignore` keeps `data/` and `.env` on this computer.
+
 ## Project Structure
 
 ```
 BudgetTracker/
 ├── src/              # Source code
+├── server/           # API the iPhone app uses (FastAPI); Dockerfile at the root builds it
+├── deploy/           # cloud.sh: put the server on Google Cloud
 ├── ios/              # iPhone app (open ios/ExpenseAnalyzer.xcodeproj in Xcode)
 ├── tests/            # Unit tests
 ├── data/             # Data files

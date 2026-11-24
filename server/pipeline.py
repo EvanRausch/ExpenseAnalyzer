@@ -287,3 +287,32 @@ def run_job(
                 .values(running=False, finished_at=now(), error=error[:300])
             )
             db.commit()
+
+
+INTERRUPTED = "The server stopped during the sync; it will finish on the next one"
+
+
+def interrupt_jobs(engine: Engine, user_ids: set[str]) -> None:
+    """Record that these people's running syncs died with the server.
+
+    Without this a sync killed mid-way would stay marked as running for STALE_AFTER.
+    """
+    if not user_ids:
+        return
+    with Session(engine) as db:
+        db.execute(
+            update(Job)
+            .where(Job.user_id.in_(list(user_ids)))
+            .where(Job.running.is_(True))
+            .values(running=False, finished_at=now(), error=INTERRUPTED)
+        )
+        db.commit()
+
+
+def set_webhook(engine: Engine, banks: list[Bank], url: str) -> None:
+    """Tell Plaid to announce new transactions of these banks at `url`."""
+    for bank in banks:
+        plaid_sync._post(
+            "/item/webhook/update",
+            {"access_token": decrypt(engine, bank.access_token), "webhook": url},
+        )

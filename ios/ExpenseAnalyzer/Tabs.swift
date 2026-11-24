@@ -1,6 +1,6 @@
 import Charts
+import SafariServices
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct SummaryTab: View {
     @Environment(DataStore.self) private var store
@@ -71,7 +71,7 @@ struct SummaryTab: View {
                 }
                 SyncMenu()
             }
-            .refreshable { await store.reload() }
+            .refreshable { await store.refresh() }
             .drillDown(into: shown)
         }
     }
@@ -113,7 +113,7 @@ struct TransactionsTab: View {
             }
             .navigationTitle("Transactions")
             .toolbar { SyncMenu() }
-            .refreshable { await store.reload() }
+            .refreshable { await store.refresh() }
             .drillDown(into: filtered)
         }
     }
@@ -140,7 +140,7 @@ struct StatisticsTab: View {
                 }
                 Section("AI Spending Analysis") {
                     if store.data.aiAnalysis.isEmpty {
-                        Text("No analysis yet. Open the Statistics tab on your Mac to create one.")
+                        Text("No analysis yet. It is written after the next bank sync.")
                             .foregroundStyle(.secondary)
                     } else {
                         MarkdownText(text: store.data.aiAnalysis)
@@ -149,7 +149,7 @@ struct StatisticsTab: View {
             }
             .navigationTitle("Statistics")
             .toolbar { SyncMenu() }
-            .refreshable { await store.reload() }
+            .refreshable { await store.refresh() }
             .drillDown(into: spending)
         }
     }
@@ -312,7 +312,7 @@ struct IncomeTab: View {
             }
             .navigationTitle("Income & Inflows")
             .toolbar { SyncMenu() }
-            .refreshable { await store.reload() }
+            .refreshable { await store.refresh() }
             .drillDown(into: filtered)
         }
     }
@@ -345,50 +345,96 @@ struct TrashTab: View {
             }
             .navigationTitle("Trash")
             .toolbar { SyncMenu() }
-            .refreshable { await store.reload() }
+            .refreshable { await store.refresh() }
             .drillDown(into: trash)
         }
     }
 }
 
-/// Shows how fresh the data is and what is still waiting for the Mac.
+/// Shows how fresh the data is, what is still on its way, and the bank connection.
 struct SyncMenu: View {
     @Environment(DataStore.self) private var store
-    @State private var choosingFolder = false
+    @State private var bankPage: BankPage?
+    @State private var signingOut = false
+
+    private struct BankPage: Identifiable {
+        let url: URL
+        var id: String { url.absoluteString }
+    }
 
     var body: some View {
         Menu {
             Section {
-                Text(
-                    "Updated by your Mac \(store.data.exportedAt.formatted(.relative(presentation: .named)))"
-                )
+                if let status = store.status {
+                    if status.syncing || store.isSyncing {
+                        Text("Checking the bank…")
+                    } else if let date = status.lastSyncDate {
+                        Text("Bank checked \(date.formatted(.relative(presentation: .named)))")
+                    } else if status.banks.isEmpty {
+                        Text("No bank connected")
+                    }
+                    ForEach(status.banks, id: \.self) { bank in
+                        Label(bank, systemImage: "building.columns")
+                    }
+                    if !status.error.isEmpty {
+                        Text(status.error)
+                    }
+                }
                 if !store.pendingEdits.isEmpty {
-                    Text("\(store.pendingEdits.count) changes waiting for your Mac")
+                    Text("\(store.pendingEdits.count) changes waiting to be sent")
                 }
                 if let error = store.errorMessage {
                     Text(error)
                 }
             }
             Button("Refresh", systemImage: "arrow.clockwise") {
-                Task { await store.reload() }
+                Task { await store.refresh() }
             }
-            Button("Change Folder…", systemImage: "folder") { choosingFolder = true }
+            Button("Connect a Bank…", systemImage: "building.columns") {
+                Task { bankPage = await store.startBankLink().map(BankPage.init) }
+            }
+            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                signingOut = true
+            }
         } label: {
             Label("Sync", systemImage: icon)
         }
         .accessibilityIdentifier("syncMenu")
-        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result {
-                Task { await store.useFolder(url) }
+        .sheet(item: $bankPage) { page in
+            SafariView(url: page.url)
+                .ignoresSafeArea()
+                // Closing the bank's page is when the server can tell whether it went through
+                .onDisappear { Task { _ = await store.finishBankLink() } }
+        }
+        .confirmationDialog(
+            "Sign out of this phone?", isPresented: $signingOut, titleVisibility: .visible
+        ) {
+            Button("Sign Out", role: .destructive) {
+                Task { await store.signOut() }
             }
+        } message: {
+            Text("Your data stays on the server; signing in again brings it back.")
         }
     }
 
     private var icon: String {
         if store.errorMessage != nil { return "exclamationmark.icloud" }
-        return store.pendingEdits.isEmpty
-            ? "checkmark.icloud" : "arrow.triangle.2.circlepath.icloud"
+        if store.isSyncing || store.status?.syncing == true {
+            return "arrow.triangle.2.circlepath.icloud"
+        }
+        return store.pendingEdits.isEmpty ? "checkmark.icloud" : "icloud.and.arrow.up"
     }
+}
+
+/// The bank's login page, shown inside the app.
+struct SafariView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        SFSafariViewController(url: url)
+    }
+
+    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
 }
 
 /// Headings, bullets and inline styles: enough for the Mac's AI analysis.

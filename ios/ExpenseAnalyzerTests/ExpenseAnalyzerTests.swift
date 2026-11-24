@@ -307,22 +307,20 @@ struct DetailStatsTests {
 
 @MainActor
 struct DataStoreTests {
-    private let folder: URL
+    private let server: FixtureTransport
+    private let files: URL
 
     init() throws {
-        folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try Data(ExportTests.json.utf8).write(
-            to: folder.appendingPathComponent(ExportFile.fileName))
+        server = try FixtureTransport(data: Data(ExportTests.json.utf8))
+        files = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     }
 
-    private func savedEdits() throws -> [Edit] {
-        let data = try Data(contentsOf: folder.appendingPathComponent(EditFile.fileName))
-        return try JSONDecoder().decode(EditFile.self, from: data).edits
+    private func store(token: String? = "t") -> DataStore {
+        DataStore(api: API(server: Server.defaultURL, token: token, transport: server), files: files)
     }
 
     @Test func loadsAndSplitsSpendingFromIncome() async {
-        let store = DataStore(folder: folder)
+        let store = store()
         await store.reload()
 
         #expect(store.hasData)
@@ -331,51 +329,88 @@ struct DataStoreTests {
         #expect(store.income.map(\.merchant) == ["Acme"])
         #expect(store.isOfficial("Acme"))
         #expect(store.emoji(for: "Groceries") == "🛒")
+        #expect(store.status?.banks == ["Demo Bank"])
     }
 
-    @Test func aChangeShowsAtOnceAndIsSavedForTheMac() async throws {
-        let store = DataStore(folder: folder)
+    @Test func aChangeShowsAtOnceAndIsSentToTheServer() async {
+        let store = store()
         await store.reload()
 
         store.setCategory("Snacks", for: store.spending[0])
-
         #expect(store.spending.allSatisfy { $0.category == "Snacks" })
-        let saved = try savedEdits()
-        #expect(saved.count == 1)
-        #expect(saved[0].type == .setCategory)
-        #expect(saved[0].keys == ["a"])
-        #expect(saved[0].value == "Snacks")
+        await store.sendPendingEdits()
+
+        #expect(store.pendingEdits.isEmpty)
+        #expect(server.received.map(\.type) == [.setCategory])
+        #expect(server.received[0].keys == ["a"])
+        #expect(server.file.transactions[0].category == "Snacks")
+        #expect(store.spending.allSatisfy { $0.category == "Snacks" })
     }
 
-    @Test func changesSurviveARestartUntilTheMacConfirmsThem() async throws {
-        let first = DataStore(folder: folder)
+    @Test func changesMadeOfflineAreKeptAndSentLater() async throws {
+        let first = store()
         await first.reload()
+        server.offline = true
         first.moveToTrash([first.income[0]])
+        await first.sendPendingEdits()
+        #expect(first.errorMessage != nil)
         let id = try #require(first.pendingEdits.first?.id)
 
-        let second = DataStore(folder: folder)
-        await second.reload()
+        // Opened again without a connection: the last data and the change are still there
+        let second = store()
+        #expect(second.hasData)
         #expect(second.pendingEdits.map(\.id) == [id])
         #expect(second.income.isEmpty)
         #expect(second.data.trash.map(\.key) == ["pay"])
 
-        // The Mac applies the change and lists it in its next export
-        let confirmed = ExportTests.json.replacingOccurrences(of: "[\"done\"]", with: "[\"\(id)\"]")
-        try Data(confirmed.utf8).write(to: folder.appendingPathComponent(ExportFile.fileName))
+        server.offline = false
         await second.reload()
 
         #expect(second.pendingEdits.isEmpty)
-        #expect(try savedEdits().isEmpty)
+        #expect(second.errorMessage == nil)
+        #expect(server.file.trash.map(\.key) == ["pay"])
+        #expect(server.received.map(\.id) == [id])
     }
 
-    @Test func aMissingExportIsReportedWithoutLosingWhatIsShown() async throws {
-        let store = DataStore(folder: folder)
+    @Test func aLostConnectionIsReportedWithoutLosingWhatIsShown() async {
+        let store = store()
         await store.reload()
-        try FileManager.default.removeItem(at: folder.appendingPathComponent(ExportFile.fileName))
+        server.offline = true
 
         await store.reload()
 
         #expect(store.errorMessage != nil)
         #expect(store.spending.count == 2)
+    }
+
+    @Test func signingInChecksTheTokenAndSigningOutForgetsEverything() async {
+        let store = store(token: nil)
+        #expect(!store.isSignedIn)
+
+        server.signedOut = true
+        #expect(await store.signIn(token: "wrong", server: Server.defaultURL) == false)
+        #expect(!store.isSignedIn)
+        #expect(store.errorMessage != nil)
+
+        server.signedOut = false
+        #expect(await store.signIn(token: " right\n", server: Server.defaultURL))
+        #expect(store.isSignedIn)
+        #expect(store.spending.count == 2)
+
+        await store.signOut()
+        #expect(!store.isSignedIn)
+        #expect(!store.hasData)
+        #expect(store.spending.isEmpty)
+    }
+
+    @Test func beingRefusedByTheServerGoesBackToSigningIn() async {
+        let store = store()
+        await store.reload()
+        server.signedOut = true
+
+        await store.reload()
+
+        #expect(!store.isSignedIn)
+        #expect(store.errorMessage != nil)
     }
 }

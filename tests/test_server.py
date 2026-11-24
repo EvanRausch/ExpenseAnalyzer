@@ -3,6 +3,7 @@
 import csv
 import hashlib
 import json
+import threading
 import time
 from types import SimpleNamespace
 
@@ -140,7 +141,7 @@ def test_requests_without_a_valid_token_are_refused(server):
     )
     assert server.client.get("/v1/status", headers=wrong).status_code == 401
     assert server.client.delete("/v1/account", headers=wrong).status_code == 401
-    assert server.client.get("/healthz").json() == {"ok": True}
+    assert server.client.get("/health").json() == {"ok": True}
 
 
 @pytest.fixture
@@ -206,6 +207,31 @@ def test_sign_ins_apple_did_not_issue_for_this_app_are_refused(server, apple):
         assert response.status_code == 401
     with Session(server.engine) as db:
         assert db.scalar(select(func.count()).select_from(User)) == 0
+
+
+def test_signing_in_with_apple_keeps_the_data_of_a_token_account(server, apple):
+    """The phone first signs in with the token import-mac printed, Apple comes later."""
+    _, by_token = _person(server, rows=[_row()])
+
+    def sign_in(person, headers=None):
+        response = server.client.post(
+            "/v1/auth/apple", json={"identityToken": apple(person)}, headers=headers
+        )
+        assert response.status_code == 200
+        return {"Authorization": f"Bearer {response.json()['token']}"}
+
+    by_apple = sign_in("apple-1", headers=by_token)
+
+    assert len(_export(server, by_apple)["transactions"]) == 1
+    assert len(_export(server, by_token)["transactions"]) == 1
+    # From now on that Apple account finds the same data from any device
+    assert len(_export(server, sign_in("apple-1"))["transactions"]) == 1
+    with Session(server.engine) as db:
+        assert db.scalar(select(func.count()).select_from(User)) == 1
+    # An account that already has an Apple id is not handed to a different Apple user
+    assert _export(server, sign_in("apple-2", headers=by_apple))["transactions"] == []
+    with Session(server.engine) as db:
+        assert db.scalar(select(func.count()).select_from(User)) == 2
 
 
 def test_deleting_an_account_erases_it_and_disconnects_the_bank(server):
@@ -582,6 +608,39 @@ def test_only_one_sync_runs_per_person_at_a_time(server, monkeypatch):
     assert status["lastSync"].endswith("Z")
     assert len(_export(server, headers)["transactions"]) == 1
     assert server.client.post("/v1/sync", headers=headers).json() == {"started": True}
+
+
+def test_a_sync_running_when_the_server_stops_is_reported_as_interrupted(
+    server, monkeypatch
+):
+    """Cloud Run stops the server after a quiet spell, even in the middle of a sync."""
+    started, released = threading.Event(), threading.Event()
+
+    def slow_pipeline(home):
+        started.set()
+        released.wait(5)
+        return {"new_rows": 0, "complete": True}
+
+    monkeypatch.setattr(pipeline, "run_pipeline", slow_pipeline)
+    threads = []
+
+    def in_thread(work):
+        threads.append(threading.Thread(target=work))
+        threads[-1].start()
+
+    _, headers = _person(server, rows=[_row()], bank="item-1")
+    with TestClient(api.create_app(server.engine, spawn=in_thread)) as client:
+        assert client.post("/v1/sync", headers=headers).json() == {"started": True}
+        assert started.wait(5)
+        assert client.get("/v1/status", headers=headers).json()["syncing"] is True
+    # Leaving the block is the server shutting down
+
+    status = client.get("/v1/status", headers=headers).json()
+    assert (status["syncing"], status["error"]) == (False, pipeline.INTERRUPTED)
+    assert client.post("/v1/sync", headers=headers).json() == {"started": True}
+    released.set()
+    for thread in threads:
+        thread.join(5)
 
 
 # ---------------------------------------------------------------------------

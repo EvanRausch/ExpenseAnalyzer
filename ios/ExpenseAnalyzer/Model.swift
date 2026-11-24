@@ -1,9 +1,9 @@
 import Foundation
 
-/// One transaction as exported by the Mac app. `amount` is positive for money going out.
-struct Transaction: Identifiable, Hashable, Decodable {
+/// One transaction as the server sends it. `amount` is positive for money going out.
+struct Transaction: Identifiable, Hashable, Codable {
     var id = ""
-    /// Opaque identity the Mac app uses to find the same row again.
+    /// Opaque identity the server uses to find the same row again.
     let key: String
     let date: Date
     let merchant: String
@@ -27,8 +27,8 @@ struct Transaction: Identifiable, Hashable, Decodable {
     }
 }
 
-/// Everything the Mac app writes to `transactions.json`.
-struct ExportFile: Decodable {
+/// Everything the server answers to `GET /v1/export` (the Mac app writes the same to `transactions.json`).
+struct ExportFile: Codable {
     var exportedAt = Date.distantPast
     var appliedEdits: [String] = []
     var transactions: [Transaction] = []
@@ -74,7 +74,7 @@ struct ExportFile: Decodable {
     }()
 }
 
-/// A change made on the phone, waiting for the Mac app to apply it.
+/// A change made on the phone, sent to the server as soon as it can be reached.
 struct Edit: Codable, Hashable {
     enum Kind: String, Codable {
         case setCategory, setNote, trash, restore, markOfficial, unmarkOfficial
@@ -86,7 +86,7 @@ struct Edit: Codable, Hashable {
     var value = ""
 }
 
-/// The contents of `phone_edits.json`, which only the phone writes.
+/// What the phone sends to `POST /v1/edits`, and keeps on disk until the server has taken it.
 struct EditFile: Codable {
     var edits: [Edit] = []
 
@@ -94,7 +94,7 @@ struct EditFile: Codable {
 }
 
 extension ExportFile {
-    /// The data as it will look once the Mac has applied `edits`.
+    /// The data as it will look once the server has applied `edits`.
     func applying(_ edits: [Edit]) -> ExportFile {
         var file = self
         for edit in edits where !appliedEdits.contains(edit.id) {
@@ -102,7 +102,7 @@ extension ExportFile {
             switch edit.type {
             case .setCategory:
                 for chosen in file.transactions.filter({ keys.contains($0.key) }) {
-                    // The Mac gives the same change to the merchant's other rows in the old
+                    // The server gives the same change to the merchant's other rows in the old
                     // category, except for transfers, which can each be for something different
                     for index in file.transactions.indices {
                         let other = file.transactions[index]
@@ -118,7 +118,7 @@ extension ExportFile {
                     file.categories = (file.categories + [edit.value]).sorted()
                 }
             case .setNote:
-                // Notes belong to the bank description, as in the Mac app
+                // Notes belong to the bank description, as on the server
                 let descriptions = Set(
                     file.transactions.filter { keys.contains($0.key) }.map(\.bankDescription))
                 for index in file.transactions.indices

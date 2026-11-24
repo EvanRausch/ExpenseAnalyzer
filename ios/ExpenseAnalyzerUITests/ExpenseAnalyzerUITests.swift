@@ -7,7 +7,7 @@
 
 import XCTest
 
-/// Walks through every tab against a folder of made-up data.
+/// Walks through every tab against a folder of made-up data, with no server (see FixtureTransport).
 ///
 /// Needs `TEST_RUNNER_DATA_FOLDER` (a folder holding a `transactions.json`) in the environment of
 /// `xcodebuild test`; `TEST_RUNNER_SCREENSHOT_DIR` additionally saves a picture of each screen.
@@ -115,13 +115,13 @@ final class ExpenseAnalyzerUITests: XCTestCase {
         XCTAssertFalse(row("Gadget Depot", timeout: 2).exists)
 
         app.buttons["syncMenu"].tap()
-        let waiting = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label == '5 changes waiting for your Mac'")).firstMatch
-        XCTAssert(waiting.waitForExistence(timeout: 5))
+        let bank = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == 'Demo Bank'")).firstMatch
+        XCTAssert(bank.waitForExistence(timeout: 5))
         snap("sync-menu")
         app.buttons["Refresh"].tap()
 
-        // What the Mac will be asked to do
+        // What the server was sent (the stand-in server lists it in the data folder)
         let file = try Data(
             contentsOf: URL(fileURLWithPath: dataFolder).appendingPathComponent("phone_edits.json"))
         let json = try XCTUnwrap(

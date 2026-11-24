@@ -66,3 +66,6 @@ data/
 # Real bank statements used as test fixtures — never commit
 tests/pdf_csv_pairs/
 !data/.gitkeep
+
+# Cloud SQL Auth Proxy downloaded by deploy/cloud.sh import-mac
+deploy/bin/
