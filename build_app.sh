@@ -13,8 +13,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PYTHON="/Users/evanrausch-larouche/miniconda3/envs/budgettracker/bin/python"
-PYINSTALLER="/Users/evanrausch-larouche/miniconda3/envs/budgettracker/bin/pyinstaller"
+PYTHON="$HOME/miniconda3/envs/budgettracker/bin/python"
+PYINSTALLER="$HOME/miniconda3/envs/budgettracker/bin/pyinstaller"
 
 # Install PyInstaller into the env if not present
 if ! "$PYTHON" -c "import PyInstaller" 2>/dev/null; then
