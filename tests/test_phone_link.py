@@ -41,6 +41,7 @@ def mac(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ledger, "_save_official_sources", lambda s: files.update(official=set(s))
     )
+    monkeypatch.setattr(ledger, "_load_transfer_descriptions", lambda: set())
     monkeypatch.setattr(
         ledger,
         "save_correction",

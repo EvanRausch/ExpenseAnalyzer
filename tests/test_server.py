@@ -78,7 +78,7 @@ def server(tmp_path, monkeypatch):
     plaid = FakePlaid()
     monkeypatch.setattr(plaid_sync, "_post", plaid)
     monkeypatch.setattr(api, "_plaid_keys", {})
-    monkeypatch.setattr(pipeline, "analyse", lambda rows: "")
+    monkeypatch.setattr(pipeline, "analyse", lambda rows, store: "")
     engine = make_engine(f"sqlite:///{tmp_path / 'server.db'}")
     queued = []  # bank syncs the API asked for, not yet run
     client = TestClient(api.create_app(engine, spawn=queued.append))
@@ -599,7 +599,9 @@ def _write_csv(path, rows):
 def test_a_sync_runs_the_pipeline_on_the_persons_data_and_merges_the_results(
     server, monkeypatch
 ):
-    monkeypatch.setattr(pipeline, "analyse", lambda rows: f"{len(rows)} rows analysed")
+    monkeypatch.setattr(
+        pipeline, "analyse", lambda rows, store: f"{len(rows)} rows analysed"
+    )
     stays, removed_by_bank = _row(), _row(description="PENDING HOLD", amount="1.00")
     from_statement = _row(description="OLD STATEMENT", source_file="credit_2024.csv")
     in_trash = _row(description="TRASHED", amount="9.99")
@@ -681,6 +683,42 @@ def test_a_sync_runs_the_pipeline_on_the_persons_data_and_merges_the_results(
         assert "access" not in bank.state
     status = server.client.get("/v1/status", headers=headers).json()
     assert (status["syncing"], status["error"]) == (False, "")
+
+
+def test_a_sync_remembers_the_descriptions_of_the_persons_transfers(server):
+    def paid(day, amount):
+        return _row(description="VIREMENT CARTE", date=day, amount=amount)
+
+    def received(day, amount):
+        return _row(
+            description="VERSEMENT",
+            date=day,
+            amount=f"-{amount}",
+            account_type="credit",
+            source_file="plaid_credit.csv",
+        )
+
+    matched = [
+        paid("2026-01-05", "500.00"),
+        received("2026-01-05", "500.00"),
+        paid("2026-02-05", "320.00"),
+        received("2026-02-06", "320.00"),
+    ]
+    alone = received("2026-03-05", "410.00")  # its other side is not in the data
+    user_id, headers = _person(server, rows=matched + [alone], bank="item-1")
+    _, someone_else = _person(server, rows=[alone])
+
+    def shown(person):
+        return [t["bankDescription"] for t in _export(server, person)["transactions"]]
+
+    assert shown(headers) == ["VERSEMENT"]
+    assert pipeline.start_job(server.engine, user_id)
+    pipeline.run_job(
+        server.engine, user_id, lambda home: {"new_rows": 0, "complete": True}
+    )
+
+    assert shown(headers) == []
+    assert shown(someone_else) == ["VERSEMENT"]
 
 
 def test_a_failed_sync_changes_nothing_and_says_why(server):

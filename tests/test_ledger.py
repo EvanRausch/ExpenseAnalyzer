@@ -81,3 +81,183 @@ def test_overall_statistics_group_spending_by_month():
     assert stats["total_expense"] == 1124.5
     assert stats["total_income"] == 500.0
     assert stats["top_category"] == "Rent"
+
+
+@pytest.fixture(autouse=True)
+def no_saved_transfer_descriptions(monkeypatch):
+    """Keeps the descriptions saved in the real data folder out of these tests."""
+    monkeypatch.setattr(ledger, "_load_transfer_descriptions", lambda: set())
+
+
+class Memory:
+    """A store with only what learning transfers needs."""
+
+    def __init__(self, trash=()):
+        self.descriptions = set()
+        self._trash = list(trash)
+
+    def trash(self):
+        return self._trash
+
+    def transfer_descriptions(self):
+        return set(self.descriptions)
+
+    def save_transfer_descriptions(self, descriptions):
+        self.descriptions = set(descriptions)
+
+
+def bank(day, amount, description="Purchase /SHOP", **extra):
+    return {
+        "account_type": "debit",
+        "date": day,
+        "amount": amount,
+        "description": description,
+        **extra,
+    }
+
+
+def card(day, amount, description="SHOP MONTREAL QC", **extra):
+    return {**bank(day, amount, description, **extra), "account_type": "credit"}
+
+
+def test_money_leaving_the_bank_and_reaching_the_card_is_a_transfer():
+    paid = bank("2026-03-06", "500.00", "Withdrawal")
+    received = card("2026-03-09", "-500.00", "CREDIT")  # the Monday after
+    groceries = card("2026-03-06", "500.00")
+    rows = [paid, groceries, received]
+
+    assert ledger.transfer_rows(rows) == [paid, received]
+    assert ledger.spending_rows(rows) == [groceries]
+    assert ledger.visible_rows(rows) == [groceries]
+
+
+def test_a_cash_advance_from_the_card_is_neither_income_nor_spending():
+    rows = [
+        card("2026-05-12", "200.00", "ADV"),
+        bank("2026-05-12", "-200.00", "Deposit"),
+    ]
+
+    stats = ledger.compute_stats_overall(rows)
+
+    assert ledger.income_rows(rows) == []
+    assert (stats["total_income"], stats["total_expense"]) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [
+        (bank("2026-03-06", "500.00"), card("2026-03-10", "-500.00", "CREDIT")),
+        (bank("2026-03-06", "500.00"), card("2026-03-06", "-500.01", "CREDIT")),
+        (bank("2026-03-06", "500.00"), card("2026-03-06", "500.00")),
+        (bank("2026-03-06", "500.00"), bank("2026-03-06", "-500.00", "Deposit")),
+    ],
+    ids=["four days apart", "another amount", "both spent", "same account"],
+)
+def test_lines_that_only_resemble_each_other_are_not_a_transfer(first, second):
+    assert ledger.transfer_rows([first, second]) == []
+
+
+def test_each_line_is_one_side_of_a_single_transfer():
+    earlier = bank("2026-03-02", "50.00")
+    same_day = bank("2026-03-05", "50.00")
+    received = card("2026-03-05", "-50.00", "CREDIT")
+    rows = [earlier, same_day, received]
+
+    assert ledger.transfer_rows(rows) == [same_day, received]
+    assert ledger.spending_rows(rows) == [earlier]
+
+
+@pytest.mark.parametrize(
+    "row, expected",
+    [
+        (card("2026-03-06", "-800.00", "PAIEMENT CAISSE"), True),
+        (card("2026-03-06", "-800.00", "PAYMENT - THANK YOU"), True),
+        (
+            bank("2026-03-06", "-300.00", "Credit card cash advance-Internet /**8044"),
+            True,
+        ),
+        (
+            bank(
+                "2026-03-06",
+                "800.00",
+                "Paiement facture - AccesD Internet /Remises",
+                gemini_category="Bill Payment",
+                gemini_merchant="Remises",
+            ),
+            True,
+        ),
+        (card("2026-03-06", "-30.00", "AMZN Mktp CA"), False),
+        (card("2026-03-06", "45.00", "PAYMENT PLAN STORE"), False),
+        (
+            bank(
+                "2026-03-06",
+                "90.00",
+                "Bill payment - AccesD - Internet /BELL CANADA",
+                gemini_category="Telecom & Internet",
+                gemini_merchant="Bell Canada",
+            ),
+            False,
+        ),
+    ],
+    ids=[
+        "card payment",
+        "card payment in English",
+        "cash advance received",
+        "payment to the card under its French name",
+        "refund on the card",
+        "purchase on the card",
+        "bill paid to a company",
+    ],
+)
+def test_a_transfer_missing_its_other_side_is_known_by_its_wording(row, expected):
+    assert (ledger.transfer_rows([row]) == [row]) is expected
+
+
+def test_a_description_matched_as_a_transfer_is_one_without_its_other_side():
+    store = Memory()
+    history = [
+        bank("2026-01-05", "500.00", "Virement  /MA CARTE"),
+        card("2026-01-05", "-500.00", "VERSEMENT REÇU"),
+        bank("2026-02-05", "320.00", "Virement /MA CARTE"),
+        card("2026-02-06", "-320.00", "VERSEMENT REÇU"),
+    ]
+    # Written as a downloaded statement does: no accent, other capitals
+    alone = card("2026-03-05", "-410.00", "Versement recu")
+    purchase = card("2026-03-05", "410.00")
+
+    ledger.learn_transfers(history, store)
+
+    assert store.descriptions == {"virement /ma carte", "versement recu"}
+    assert ledger.transfer_rows([alone, purchase], store) == [alone]
+    assert ledger.spending_rows([alone, purchase], store) == [purchase]
+    # Someone who never had those transfers
+    assert ledger.transfer_rows([alone, purchase], Memory()) == []
+
+
+def test_chance_matches_do_not_make_a_description_a_transfer():
+    store = Memory()
+    cash_back = [card(f"2026-0{m}-10", "-25.00", "CRÉDIT REMISES") for m in range(1, 6)]
+    # Sent to two people on days a cash-back credit of the same amount arrived
+    sent = [
+        bank("2026-01-10", "25.00", "Interac e-Transfer to /Raul"),
+        bank("2026-02-11", "25.00", "Interac e-Transfer to /Jose"),
+    ]
+
+    ledger.learn_transfers(cash_back + sent, store)
+
+    assert store.descriptions == set()
+
+
+def test_transfers_in_the_trash_are_learned_from_too():
+    trash = [
+        card("2026-04-23", "500.00", "AVANCE"),
+        bank("2026-04-23", "-500.00", "Advance received"),
+        card("2026-05-06", "120.00", "AVANCE"),
+        bank("2026-05-06", "-120.00", "Advance received"),
+    ]
+    store = Memory(trash)
+    store.descriptions = {"learned earlier"}
+
+    ledger.learn_transfers([], store)
+
+    assert store.descriptions == {"learned earlier", "avance", "advance received"}

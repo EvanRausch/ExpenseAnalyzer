@@ -61,6 +61,12 @@ class Book:
     def save_official_sources(self, sources: set) -> None:
         self.set_document("official_sources", sorted(sources))
 
+    def transfer_descriptions(self) -> set:
+        return set(self.document("transfer_descriptions", []))
+
+    def save_transfer_descriptions(self, descriptions: set) -> None:
+        self.set_document("transfer_descriptions", sorted(descriptions))
+
     def save_correction(self, description: str, category: str) -> None:
         self.set_document(
             "corrections", {**self.document("corrections", {}), description: category}

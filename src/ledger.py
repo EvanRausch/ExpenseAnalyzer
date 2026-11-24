@@ -14,7 +14,8 @@ import os
 import re
 import sys
 import time
-from collections import defaultdict
+import unicodedata
+from collections import Counter, defaultdict
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ TRASH_FILE = PROJECT_ROOT / "data" / "trash.json"
 USER_NOTES_FILE = PROJECT_ROOT / "data" / "user_notes.json"
 OFFICIAL_INCOME_FILE = PROJECT_ROOT / "data" / "official_income_sources.json"
 SUMMARY_DESC_FILE = PROJECT_ROOT / "data" / "summary_descriptions.json"
+TRANSFER_DESCRIPTIONS_FILE = PROJECT_ROOT / "data" / "transfer_descriptions.json"
 
 # ---------------------------------------------------------------------------
 # Optional Gemini client (used by Statistics tab AI analysis + coverage label)
@@ -341,6 +343,21 @@ def _save_official_sources(sources: set) -> None:
         json.dump(sorted(sources), f, ensure_ascii=False, indent=2)
 
 
+def _load_transfer_descriptions() -> set:
+    """Return the descriptions learned to be transfers (see learn_transfers)."""
+    try:
+        with open(TRANSFER_DESCRIPTIONS_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        return set()
+
+
+def _save_transfer_descriptions(descriptions: set) -> None:
+    TRANSFER_DESCRIPTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(TRANSFER_DESCRIPTIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(descriptions), f, ensure_ascii=False, indent=2)
+
+
 def _parse_amount(s: str) -> float:
     try:
         return float(str(s).replace(",", ".").strip())
@@ -420,8 +437,17 @@ def _format_date_display(raw: str, source_file: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Row classification helpers
+# Row classification: every row is spending, income, or a transfer
 # ---------------------------------------------------------------------------
+
+# A transfer between the bank account and the credit card appears once on each, for the
+# same amount. The two lines are rarely dated more than a weekend apart, and a wider
+# window starts matching unrelated lines that happen to share an amount.
+TRANSFER_WINDOW_DAYS = 3
+_CARD_PAYMENT_RE = re.compile(r"\b(paiement|payment)\b", re.IGNORECASE)
+_CASH_ADVANCE_RE = re.compile(
+    r"cash advance|avance d'argent|avance de fonds", re.IGNORECASE
+)
 
 
 def _is_cc_bill_payment(row: dict) -> bool:
@@ -429,9 +455,11 @@ def _is_cc_bill_payment(row: dict) -> bool:
     if row.get("account_type") != "debit":
         return False
     merchant = (row.get("gemini_merchant") or "").lower()
+    # "Remises" is the French name of the Cash Back card
     return (
-        "visa" in merchant or "desjardins" in merchant or "cash back" in merchant
-    ) and row.get("gemini_category") == "Bill Payment"
+        any(name in merchant for name in ("visa", "desjardins", "cash back", "remises"))
+        and row.get("gemini_category") == "Bill Payment"
+    )
 
 
 def _is_garbled_credit_transfer(row: dict) -> bool:
@@ -458,24 +486,118 @@ def _is_income(row: dict) -> bool:
     return False
 
 
-def _should_exclude_entirely(row: dict) -> bool:
-    """CC repayments and garbled credit rows — remove from all views."""
-    return _is_cc_bill_payment(row) or _is_garbled_credit_transfer(row)
+def _paired_transfers(rows: list[dict]) -> set[int]:
+    """ids of the rows that are the two sides of one transfer: a bank line and a card
+    line where the amount leaving one account reaches the other within
+    TRANSFER_WINDOW_DAYS. Each line is matched once, closest dates first."""
+    bank: dict[int, list] = defaultdict(list)
+    card: dict[int, list] = defaultdict(list)
+    for row in rows:
+        side = {"debit": bank, "credit": card}.get(row.get("account_type"))
+        cents = round(_parse_amount(row.get("amount", 0)) * 100)
+        day = row_date(row)
+        if side is not None and cents and day:
+            side[cents].append((day, row))
+    candidates = []
+    for cents, bank_lines in bank.items():
+        # Both accounts count money leaving as positive, so the two sides have opposite signs
+        for bank_day, bank_row in bank_lines:
+            for card_day, card_row in card.get(-cents, ()):
+                gap = abs((card_day - bank_day).days)
+                if gap <= TRANSFER_WINDOW_DAYS:
+                    candidates.append((gap, bank_day, bank_row, card_row))
+    candidates.sort(key=lambda c: c[:2])
+    paired: set[int] = set()
+    for _, _, bank_row, card_row in candidates:
+        if id(bank_row) not in paired and id(card_row) not in paired:
+            paired.update((id(bank_row), id(card_row)))
+    return paired
 
 
-def spending_rows(rows: list[dict]) -> list[dict]:
-    """Rows that represent actual money going out (no income, no CC repayments, no noise)."""
-    return [r for r in rows if not _should_exclude_entirely(r) and not _is_income(r)]
+def _reads_as_transfer(row: dict) -> bool:
+    """A transfer recognised from the bank's wording alone, for when the line on the
+    other account is not in the data (an unlinked account, or a day it does not cover).
+    """
+    amount = _parse_amount(row.get("amount", 0))
+    description = row.get("description") or ""
+    if row.get("account_type") == "credit":
+        return amount < 0 and bool(_CARD_PAYMENT_RE.search(description))
+    if row.get("account_type") == "debit":
+        cash_advance = amount < 0 and bool(_CASH_ADVANCE_RE.search(description))
+        return cash_advance or _is_cc_bill_payment(row)
+    return False
 
 
-def income_rows(rows: list[dict]) -> list[dict]:
-    """Income and positive inflows (payroll + incoming transfers)."""
-    return [r for r in rows if not _should_exclude_entirely(r) and _is_income(r)]
+def _wording(row: dict) -> str:
+    """The row's description without accents, case or spacing differences: the same
+    line reads "AccèsD" from the bank link and "AccesD" in a downloaded statement."""
+    text = unicodedata.normalize("NFKD", row.get("description") or "")
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return " ".join(text.casefold().split())
 
 
-def visible_rows(rows: list[dict]) -> list[dict]:
-    """All rows except noise (CC repayments + garbled credit transfers)."""
-    return [r for r in rows if not _should_exclude_entirely(r)]
+def learn_transfers(rows: list[dict], store=None) -> None:
+    """Remember the descriptions of the lines matched as transfers by amount and date.
+
+    A bank words every card payment or cash advance the same way, so a later line with
+    a remembered description is a transfer even when its other side is missing. Trashed
+    rows count too: they are still the person's transactions.
+    """
+    store = store or FileStore()
+    rows = rows + store.trash()
+    paired = _paired_transfers(rows)
+    lines: Counter = Counter()
+    matched: Counter = Counter()
+    for row in rows:
+        wording = _wording(row)
+        lines[wording] += 1
+        matched[wording] += id(row) in paired
+    # A remembered description hides every later line that carries it, so one chance
+    # match must not be enough: it has to be matched repeatedly, on most of its lines
+    learned = {w for w, n in matched.items() if w and n >= 2 and 2 * n > lines[w]}
+    known = store.transfer_descriptions()
+    if not learned <= known:
+        store.save_transfer_descriptions(known | learned)
+
+
+def transfer_rows(rows: list[dict], store=None) -> list[dict]:
+    """Rows that only move money between the person's own bank account and credit card
+    (card payments, cash advances), so they are neither spending nor income.
+
+    Money sent to or received from other people (Interac e-Transfers) is not a transfer.
+    """
+    paired = _paired_transfers(rows)
+    known = (store or FileStore()).transfer_descriptions()
+    return [
+        r
+        for r in rows
+        if id(r) in paired or _wording(r) in known or _reads_as_transfer(r)
+    ]
+
+
+def _left_out(rows: list[dict], store=None) -> set[int]:
+    """ids of the rows no view shows: transfers and garbled credit rows."""
+    return {id(r) for r in transfer_rows(rows, store)} | {
+        id(r) for r in rows if _is_garbled_credit_transfer(r)
+    }
+
+
+def spending_rows(rows: list[dict], store=None) -> list[dict]:
+    """Rows that represent actual money going out (no income, no transfers, no noise)."""
+    left_out = _left_out(rows, store)
+    return [r for r in rows if id(r) not in left_out and not _is_income(r)]
+
+
+def income_rows(rows: list[dict], store=None) -> list[dict]:
+    """Income and positive inflows (payroll + money received from other people)."""
+    left_out = _left_out(rows, store)
+    return [r for r in rows if id(r) not in left_out and _is_income(r)]
+
+
+def visible_rows(rows: list[dict], store=None) -> list[dict]:
+    """All rows except transfers and noise (garbled credit rows)."""
+    left_out = _left_out(rows, store)
+    return [r for r in rows if id(r) not in left_out]
 
 
 # Interac transfer recipient name substrings (lowercase) that map to Rent
@@ -512,6 +634,12 @@ class FileStore:
 
     def save_official_sources(self, sources: set) -> None:
         _save_official_sources(sources)
+
+    def transfer_descriptions(self) -> set:
+        return _load_transfer_descriptions()
+
+    def save_transfer_descriptions(self, descriptions: set) -> None:
+        _save_transfer_descriptions(descriptions)
 
     def save_correction(self, description: str, category: str) -> None:
         save_correction(description, category)
@@ -619,7 +747,7 @@ def _phone_edits(folder: Path) -> list[dict]:
 
 def phone_export(rows: list[dict], store, applied_edits=()) -> dict:
     """Everything the iPhone app displays."""
-    transactions = [p for r in visible_rows(rows) if (p := _phone_row(r))]
+    transactions = [p for r in visible_rows(rows, store) if (p := _phone_row(r))]
     categories = sorted(
         set(all_categories(rows, store)) | {t["category"] for t in transactions}
     )
@@ -818,7 +946,7 @@ def compute_stats(rows: list[dict], category: str) -> dict:
     }
 
 
-def compute_stats_overall(rows: list[dict]) -> dict:
+def compute_stats_overall(rows: list[dict], store=None) -> dict:
     """Compute high-level statistics across all rows.
 
     Returns a dict with keys:
@@ -826,8 +954,8 @@ def compute_stats_overall(rows: list[dict]) -> dict:
       top_category, top_category_pct, mode_counts, biggest_txn_amount,
       biggest_txn_merchant, monthly (dict month_str→expense_total)
     """
-    spend = spending_rows(rows)
-    inc = income_rows(rows)
+    spend = spending_rows(rows, store)
+    inc = income_rows(rows, store)
 
     total_expense = sum(abs(_parse_amount(r.get("amount", 0))) for r in spend)
     total_income = sum(abs(_parse_amount(r.get("amount", 0))) for r in inc)
@@ -893,13 +1021,13 @@ def compute_stats_overall(rows: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _gemini_spending_analysis(rows: list[dict]) -> str:
+def _gemini_spending_analysis(rows: list[dict], store=None) -> str:
     """Ask Gemini for a structured expense analysis. Income is intentionally excluded."""
     if not _gemini_client:
         return "No Gemini API key configured."
 
-    stats = compute_stats_overall(rows)
-    spend = spending_rows(rows)
+    stats = compute_stats_overall(rows, store)
+    spend = spending_rows(rows, store)
 
     # Top 10 categories by spend
     cat_totals: dict[str, float] = defaultdict(float)

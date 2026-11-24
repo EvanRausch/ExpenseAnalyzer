@@ -92,6 +92,7 @@ def import_folder(db: Session, engine: Engine, user_id: str, home: Path) -> None
     statements = sorted(p.name for p in (data / "statements").rglob("*.csv"))
     if cache.get("analysis") and cache.get("fingerprint") == "|".join(statements):
         book.set_document("ai_analysis", cache["analysis"])
+    ledger.learn_transfers(book.rows, book)
     for item_id, item in _read(_plaid_state_file(data), {}).get("items", {}).items():
         db.add(
             Bank(
@@ -190,6 +191,7 @@ def ingest(
         if notes.get(description) != before["notes"].get(description):
             row["user_notes"] = notes.get(description, "")
     book.rows[:] = fresh + kept
+    ledger.learn_transfers(book.rows, book)
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +218,11 @@ def run_pipeline(home: Path) -> dict:
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def analyse(rows: list[dict]) -> str:
+def analyse(rows: list[dict], store) -> str:
     """Gemini's write-up of the spending, or "" when it is not available."""
     if not ledger._gemini_client:
         return ""
-    text = ledger._gemini_spending_analysis(rows)
+    text = ledger._gemini_spending_analysis(rows, store)
     return "" if text.startswith("Analysis failed:") else text
 
 
@@ -270,7 +272,7 @@ def run_job(
                     and book.rows
                     and (result["new_rows"] or not book.ai_analysis())
                 ):
-                    text = analyse(book.rows)
+                    text = analyse(book.rows, book)
                     if text:
                         book.set_document("ai_analysis", text)
                 book.save()

@@ -122,6 +122,7 @@ from src.ledger import (
     compute_transaction_slices,
     export_for_phone,
     income_rows,
+    learn_transfers,
     load_corrections,
     load_csv,
     load_trash,
@@ -131,6 +132,7 @@ from src.ledger import (
     save_trash,
     save_user_note,
     spending_rows,
+    transfer_rows,
 )
 
 
@@ -4971,6 +4973,56 @@ class TrashTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Transfers Tab
+# ---------------------------------------------------------------------------
+
+
+class TransfersTab(QWidget):
+    """Read-only list of the transactions recognised as transfers."""
+
+    def __init__(self, rows: list[dict]):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        self._count_label = QLabel()
+        layout.addWidget(self._count_label)
+        info = QLabel(
+            "Money moved between your own bank account and credit card: payments to "
+            "the card and cash advances from it. These are neither spending nor "
+            "income, so they are left out of all calculations and charts."
+        )
+        info.setStyleSheet("color: #666; font-style: italic;")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._model = TransactionModel([])
+        self._view = QTableView()
+        self._view.setModel(self._model)
+        self._view.setAlternatingRowColors(True)
+        self._view.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._view.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._view.setSortingEnabled(True)
+        header = self._view.horizontalHeader()
+        for column in range(9):
+            header.setSectionResizeMode(column, QHeaderView.Interactive)
+        header.setStretchLastSection(False)
+        _restore_column_widths(
+            header, "transfers_view", [90, 220, 90, 130, 130, 80, 160, 110, 70]
+        )
+        header.sectionResized.connect(
+            lambda *_: _save_column_widths(header, "transfers_view")
+        )
+        self._view.verticalHeader().hide()
+        layout.addWidget(self._view)
+        self.update_data(rows)
+
+    def update_data(self, rows: list[dict]) -> None:
+        transfers = transfer_rows(rows)
+        self._model.set_rows(transfers)
+        n = len(transfers)
+        self._count_label.setText(f"{n} transfer{'s' if n != 1 else ''}")
+
+
+# ---------------------------------------------------------------------------
 # Coverage Tab
 # ---------------------------------------------------------------------------
 
@@ -5514,6 +5566,7 @@ class MainWindow(QMainWindow):
         self._txn_tab: TransactionsTab | None = None
         self._stats_tab: StatisticsTab | None = None
         self._income_tab: IncomeTab | None = None
+        self._transfers_tab: TransfersTab | None = None
         self._trash_tab: TrashTab | None = None
         self._coverage_tab: CoverageTab | None = None
 
@@ -5748,6 +5801,7 @@ class MainWindow(QMainWindow):
         if not rows:
             self.statusBar().showMessage(f"No data found at {OUTPUT_FILE}", 0)
             return
+        learn_transfers(rows)
         export_for_phone(rows)
 
         if self._summary_tab is None:
@@ -5763,12 +5817,14 @@ class MainWindow(QMainWindow):
             self._stats_tab = StatisticsTab(rows)
             self._income_tab = IncomeTab(rows)
             self._coverage_tab = CoverageTab(rows)
+            self._transfers_tab = TransfersTab(rows)
             self._trash_tab = TrashTab()
             self._tabs.addTab(self._summary_tab, "📈 Summary")
             self._tabs.addTab(self._txn_tab, "💳 Transactions")
             self._tabs.addTab(self._stats_tab, "📉 Statistics")
             self._tabs.addTab(self._income_tab, "💰 Income & Inflows")
             self._tabs.addTab(self._coverage_tab, "📊 Coverage")
+            self._tabs.addTab(self._transfers_tab, "🔁 Transfers")
             self._tabs.addTab(self._trash_tab, "🗑 Trash")
             # Connect trash signals
             self._txn_tab.trash_requested.connect(self._on_trash_requested)
@@ -5780,6 +5836,7 @@ class MainWindow(QMainWindow):
             self._stats_tab.update_data(rows)
             self._income_tab.update_data(rows)
             self._coverage_tab.update_data(rows)
+            self._transfers_tab.update_data(rows)
             self._trash_tab.refresh()
 
         self._update_status_bar()
@@ -5821,6 +5878,8 @@ class MainWindow(QMainWindow):
             self._stats_tab.update_data(self._rows)
         if self._income_tab:
             self._income_tab.update_data(self._rows)
+        if self._transfers_tab:
+            self._transfers_tab.update_data(self._rows)
 
     def _on_trash_requested(self, rows_to_trash: list) -> None:
         """Move selected transactions to the trash."""
