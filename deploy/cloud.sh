@@ -9,6 +9,7 @@
 #
 # Afterwards:
 #   ./deploy/cloud.sh token       print a fresh sign-in token for the iPhone app
+#   ./deploy/cloud.sh add-user    create an empty account for another person; prints their token
 #   ./deploy/cloud.sh deploy      again, whenever server/ or src/ changed
 #   ./deploy/cloud.sh url         print the server's address (for the iPhone app and Plaid)
 #   ./deploy/cloud.sh logs        show the server's latest log lines
@@ -277,6 +278,16 @@ else:
     echo "Paste it on the iPhone app's sign-in screen. Earlier tokens keep working."
     ;;
 
+  add-user)
+    need_login
+    open_tunnel
+    say "New account"
+    with_database "$PYTHON" -m server.cli add-user
+    echo
+    echo "That person pastes the token on the app's sign-in screen, then uses"
+    echo "Connect a Bank… in the sync menu to log in to their bank on Plaid's page."
+    ;;
+
   url)
     echo "$URL"
     ;;
@@ -296,7 +307,7 @@ else:
     ;;
 
   *)
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
