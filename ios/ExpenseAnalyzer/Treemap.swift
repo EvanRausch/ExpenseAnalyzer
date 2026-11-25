@@ -128,19 +128,33 @@ struct TreemapView: View {
     private static let header: CGFloat = 18
 
     var body: some View {
-        ZoomableChart(height: height) { size, visible in
+        ZoomableChart(height: height, onTap: open) { size, visible in
             map(in: CGRect(origin: .zero, size: size), visible: visible)
         }
     }
 
-    private func map(in rect: CGRect, visible: CGRect) -> some View {
-        let cells = Treemap.cells(
+    private func cells(in rect: CGRect) -> (groups: [Treemap.Cell], categories: [Treemap.Cell]) {
+        Treemap.cells(
             groups: groups,
             categories: { group in
                 transactions.filter { store.group(of: $0.category) == group }
                     .grouped(by: \.category)
             },
             in: rect, header: Self.header)
+    }
+
+    /// A one-finger tap: a category tile opens its merchants, a group's name strip its categories.
+    private func open(at point: CGPoint, size: CGSize) {
+        let cells = cells(in: CGRect(origin: .zero, size: size))
+        if let cell = cells.categories.first(where: { $0.rect.contains(point) }) {
+            navigate(.merchants(cell.name))
+        } else if let group = cells.groups.first(where: { $0.rect.contains(point) }) {
+            navigate(.categories(group.name))
+        }
+    }
+
+    private func map(in rect: CGRect, visible: CGRect) -> some View {
+        let cells = cells(in: rect)
         let colour = Dictionary(
             uniqueKeysWithValues: groups.enumerated().map { ($1.name, Palette.color($0)) })
         return ZStack(alignment: .topLeading) {
@@ -151,18 +165,17 @@ struct TreemapView: View {
                     .offset(x: cell.rect.minX, y: cell.rect.minY)
             }
             ForEach(cells.categories) { cell in
-                Button { navigate(.merchants(cell.name)) } label: {
-                    categoryTile(cell, colour: colour[cell.group] ?? .gray, visible: visible)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("chart")
-                .frame(width: cell.rect.width, height: cell.rect.height)
-                .offset(x: cell.rect.minX, y: cell.rect.minY)
+                categoryTile(cell, colour: colour[cell.group] ?? .gray, visible: visible)
+                    .accessibilityIdentifier("chart")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { navigate(.merchants(cell.name)) }
+                    .frame(width: cell.rect.width, height: cell.rect.height)
+                    .offset(x: cell.rect.minX, y: cell.rect.minY)
             }
             ForEach(cells.groups) { cell in
                 if cell.rect.width > 60 && cell.rect.height > Self.header * 2 {
                     let slide = Self.slide(cell.rect, toward: visible, labelHeight: Self.header)
-                    Button { navigate(.categories(cell.name)) } label: {
+                    Group {
                         HStack(spacing: 4) {
                             Text("\(store.emoji(for: cell.name)) \(cell.name)").lineLimit(1)
                             if cell.rect.width > 220 {
@@ -175,12 +188,17 @@ struct TreemapView: View {
                         .background(.thinMaterial, in: Capsule())
                         .frame(width: cell.rect.width - 6, height: Self.header, alignment: .leading)
                     }
-                    .buttonStyle(.plain)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(cell.name) group, \(cell.total.money)")
                     .accessibilityIdentifier("chart")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { navigate(.categories(cell.name)) }
                     .offset(x: cell.rect.minX + 3 + slide.width, y: cell.rect.minY + 1 + slide.height)
                 }
             }
         }
+        // Offsets do not count for layout: fill the rectangle so positions and taps agree
+        .frame(width: rect.width, height: rect.height, alignment: .topLeading)
     }
 
     /// How far to move a label from a cell's top-left so it stays on screen when the cell is

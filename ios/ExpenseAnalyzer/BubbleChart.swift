@@ -151,7 +151,7 @@ struct BubbleChartView: View {
     }
 
     var body: some View {
-        ZoomableChart(height: height) { size, visible in
+        ZoomableChart(height: height, onTap: open) { size, visible in
             chart(in: CGRect(origin: .zero, size: size).insetBy(dx: 4, dy: 4), visible: visible)
         }
         .onChange(of: signature, initial: true) { _, _ in
@@ -164,42 +164,52 @@ struct BubbleChartView: View {
         }
     }
 
+    /// A one-finger tap: the smallest bubble under it opens its merchants, a cluster its categories.
+    private func open(at point: CGPoint, size: CGSize) {
+        let laid = Bubbles.fit(unit, in: CGRect(origin: .zero, size: size).insetBy(dx: 4, dy: 4))
+        func holds(_ b: Bubbles.Bubble) -> Bool { hypot(b.x - point.x, b.y - point.y) <= b.r }
+        if let bubble = laid.bubbles.filter(holds).min(by: { $0.r < $1.r }) {
+            navigate(.merchants(bubble.name))
+        } else if let cluster = laid.clusters.filter(holds).min(by: { $0.r < $1.r }) {
+            navigate(.categories(cluster.name))
+        }
+    }
+
     private func chart(in rect: CGRect, visible: CGRect) -> some View {
         let laid = Bubbles.fit(unit, in: rect)
         let colour = Dictionary(
             uniqueKeysWithValues: groups.enumerated().map { ($1.name, Palette.color($0)) })
         return ZStack {
             ForEach(laid.clusters) { cluster in
-                Button { navigate(.categories(cluster.name)) } label: {
-                    ZStack(alignment: .top) {
-                        Circle().fill((colour[cluster.name] ?? .gray).opacity(0.15))
-                        if cluster.r > 90 {
-                            Text("\(store.emoji(for: cluster.name)) \(cluster.name)")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.top, 6)
-                        }
+                ZStack(alignment: .top) {
+                    Circle().fill((colour[cluster.name] ?? .gray).opacity(0.15))
+                    if cluster.r > 90 {
+                        Text("\(store.emoji(for: cluster.name)) \(cluster.name)")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 6)
                     }
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("chart")
                 .frame(width: cluster.r * 2, height: cluster.r * 2)
                 .position(x: cluster.x, y: cluster.y)
+                .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(cluster.name) group, \(cluster.total.money)")
+                .accessibilityIdentifier("chart")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { navigate(.categories(cluster.name)) }
             }
             ForEach(laid.bubbles) { bubble in
-                Button { navigate(.merchants(bubble.name)) } label: {
-                    ZStack {
-                        Circle().fill(colour[bubble.group] ?? .gray)
-                        label(bubble).offset(Self.slide(bubble, toward: visible))
-                    }
+                ZStack {
+                    Circle().fill(colour[bubble.group] ?? .gray)
+                    label(bubble).offset(Self.slide(bubble, toward: visible))
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("chart")
                 .frame(width: bubble.r * 2, height: bubble.r * 2)
                 .position(x: bubble.x, y: bubble.y)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(bubble.name), \(bubble.total.money)")
+                .accessibilityIdentifier("chart")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { navigate(.merchants(bubble.name)) }
             }
         }
     }

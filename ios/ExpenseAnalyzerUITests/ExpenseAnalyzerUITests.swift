@@ -51,6 +51,24 @@ final class ExpenseAnalyzerUITests: XCTestCase {
         app.buttons["Fuel & gas stations"].tap()
         XCTAssert(row("Transportation").exists)
 
+        // The map: two fingers only zoom, even with one on a tile; one finger opens the tile
+        app.swipeDown()  // back to the top, where the chart is
+        let tile = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == 'chart' AND label BEGINSWITH 'Supermarkets'")
+        ).firstMatch
+        XCTAssert(tile.waitForExistence(timeout: 5))
+        tile.pinch(withScale: 1.3, velocity: 0.3)
+        XCTAssert(app.navigationBars["Summary"].exists)
+        XCTAssert(app.buttons["Reset zoom"].waitForExistence(timeout: 3))
+        snap("summary-zoomed")
+        app.buttons["Reset zoom"].tap()
+        tile.tap()
+        XCTAssert(
+            app.navigationBars.staticTexts.matching(
+                NSPredicate(format: "label CONTAINS 'Supermarkets'")
+            ).firstMatch.waitForExistence(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
         row("Food & drink").tap()
         XCTAssert(row("Supermarkets & grocery stores").exists)
         snap("categories")
