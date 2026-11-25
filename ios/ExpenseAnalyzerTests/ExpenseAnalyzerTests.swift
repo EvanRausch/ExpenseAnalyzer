@@ -451,3 +451,53 @@ struct DataStoreTests {
         #expect(store.errorMessage != nil)
     }
 }
+
+struct ChartLayoutTests {
+    @Test func treemapAreasFollowTheAmountsAndStayInside() {
+        let rect = CGRect(x: 0, y: 0, width: 300, height: 200)
+        let items = [("a", 50.0), ("b", 30.0), ("c", 15.0), ("d", 5.0)]
+        let placed = Treemap.layout(items.map { (id: $0.0, value: $0.1) }, in: rect)
+
+        #expect(placed.count == 4)
+        for (id, value) in items {
+            let cell = placed[id]!
+            #expect(rect.insetBy(dx: -0.01, dy: -0.01).contains(cell))
+            #expect(abs(cell.width * cell.height - value * 600) < 0.01)
+        }
+        // No two cells overlap
+        let cells = Array(placed.values)
+        for i in cells.indices {
+            for j in cells.indices where j > i {
+                #expect(cells[i].intersection(cells[j]).width * cells[i].intersection(cells[j]).height < 0.01)
+            }
+        }
+    }
+
+    @Test func bubblesNeverOverlapAndFillTheView() {
+        let groups = [GroupTotal(name: "G1", total: 100, count: 3), GroupTotal(name: "G2", total: 40, count: 2)]
+        let members = [
+            "G1": [GroupTotal(name: "a", total: 60, count: 1), GroupTotal(name: "b", total: 30, count: 1), GroupTotal(name: "c", total: 10, count: 1)],
+            "G2": [GroupTotal(name: "d", total: 25, count: 1), GroupTotal(name: "e", total: 15, count: 1)],
+        ]
+        let unit = Bubbles.unitLayout(groups: groups) { members[$0] ?? [] }
+        let rect = CGRect(x: 0, y: 0, width: 320, height: 300)
+        let laid = Bubbles.fit(unit, in: rect)
+
+        #expect(laid.bubbles.count == 5)
+        for i in laid.bubbles.indices {
+            for j in laid.bubbles.indices where j > i {
+                let a = laid.bubbles[i], b = laid.bubbles[j]
+                #expect(hypot(a.x - b.x, a.y - b.y) >= a.r + b.r - 0.01)
+            }
+            let bubble = laid.bubbles[i]
+            #expect(bubble.x - bubble.r >= -0.01 && bubble.x + bubble.r <= rect.width + 0.01)
+            #expect(bubble.y - bubble.r >= -0.01 && bubble.y + bubble.r <= rect.height + 0.01)
+        }
+        // Areas keep their proportions after fitting
+        let a = laid.bubbles.first { $0.name == "a" }!, d = laid.bubbles.first { $0.name == "d" }!
+        #expect(abs((a.r * a.r) / (d.r * d.r) - 60.0 / 25.0) < 0.01)
+        // Zooming re-fits the same packing at a larger size
+        let zoomed = Bubbles.fit(unit, in: CGRect(x: 0, y: 0, width: 640, height: 600))
+        #expect(abs(zoomed.bubbles[0].r - laid.bubbles[0].r * 2) < 0.01)
+    }
+}

@@ -10,6 +10,7 @@ enum Treemap {
         let group: String
         let name: String
         let total: Double
+        var count = 0
         let rect: CGRect
     }
 
@@ -91,7 +92,9 @@ enum Treemap {
         for group in groups {
             guard let frame = outer[group.name] else { continue }
             groupCells.append(
-                Cell(id: group.name, group: group.name, name: group.name, total: group.total, rect: frame))
+                Cell(
+                    id: group.name, group: group.name, name: group.name, total: group.total,
+                    count: group.count, rect: frame))
             let padded = frame.insetBy(dx: gap, dy: gap)
             // The group's name sits in a strip at the top; categories fill the rest
             let inner = CGRect(
@@ -100,10 +103,11 @@ enum Treemap {
             guard inner.width > 0, inner.height > 0 else { continue }
             let members = categories(group.name)
             for (name, cellRect) in layout(members.map { ($0.name, $0.total) }, in: inner) {
-                let total = members.first { $0.name == name }?.total ?? 0
+                let member = members.first { $0.name == name }
                 categoryCells.append(
                     Cell(
-                        id: "\(group.name)/\(name)", group: group.name, name: name, total: total,
+                        id: "\(group.name)/\(name)", group: group.name, name: name,
+                        total: member?.total ?? 0, count: member?.count ?? 0,
                         rect: cellRect.insetBy(dx: gap / 2, dy: gap / 2)))
             }
         }
@@ -111,7 +115,8 @@ enum Treemap {
     }
 }
 
-/// The treemap as a view: tap a category to see its merchants, a group's name to see its categories.
+/// The treemap as a view: tap a category to see its merchants, a group's name to see its
+/// categories; pinch to zoom in on the small ones.
 struct TreemapView: View {
     @Environment(DataStore.self) private var store
     @Environment(\.navigate) private var navigate
@@ -123,71 +128,110 @@ struct TreemapView: View {
     private static let header: CGFloat = 18
 
     var body: some View {
-        GeometryReader { geometry in
-            let rect = CGRect(origin: .zero, size: geometry.size)
-            let cells = Treemap.cells(
-                groups: groups,
-                categories: { group in
-                    transactions.filter { store.group(of: $0.category) == group }
-                        .grouped(by: \.category)
-                },
-                in: rect, header: Self.header)
-            let colour = Dictionary(
-                uniqueKeysWithValues: groups.enumerated().map { ($1.name, Palette.color($0)) })
-            ZStack(alignment: .topLeading) {
-                ForEach(cells.groups) { cell in
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill((colour[cell.name] ?? .gray).opacity(0.18))
-                        .frame(width: cell.rect.width, height: cell.rect.height)
-                        .offset(x: cell.rect.minX, y: cell.rect.minY)
+        ZoomableChart(height: height) { size, visible in
+            map(in: CGRect(origin: .zero, size: size), visible: visible)
+        }
+    }
+
+    private func map(in rect: CGRect, visible: CGRect) -> some View {
+        let cells = Treemap.cells(
+            groups: groups,
+            categories: { group in
+                transactions.filter { store.group(of: $0.category) == group }
+                    .grouped(by: \.category)
+            },
+            in: rect, header: Self.header)
+        let colour = Dictionary(
+            uniqueKeysWithValues: groups.enumerated().map { ($1.name, Palette.color($0)) })
+        return ZStack(alignment: .topLeading) {
+            ForEach(cells.groups) { cell in
+                RoundedRectangle(cornerRadius: 6)
+                    .fill((colour[cell.name] ?? .gray).opacity(0.18))
+                    .frame(width: cell.rect.width, height: cell.rect.height)
+                    .offset(x: cell.rect.minX, y: cell.rect.minY)
+            }
+            ForEach(cells.categories) { cell in
+                Button { navigate(.merchants(cell.name)) } label: {
+                    categoryTile(cell, colour: colour[cell.group] ?? .gray, visible: visible)
                 }
-                ForEach(cells.categories) { cell in
-                    Button { navigate(.merchants(cell.name)) } label: {
-                        categoryTile(cell, colour: colour[cell.group] ?? .gray)
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("chart")
+                .frame(width: cell.rect.width, height: cell.rect.height)
+                .offset(x: cell.rect.minX, y: cell.rect.minY)
+            }
+            ForEach(cells.groups) { cell in
+                if cell.rect.width > 60 && cell.rect.height > Self.header * 2 {
+                    let slide = Self.slide(cell.rect, toward: visible, labelHeight: Self.header)
+                    Button { navigate(.categories(cell.name)) } label: {
+                        HStack(spacing: 4) {
+                            Text("\(store.emoji(for: cell.name)) \(cell.name)").lineLimit(1)
+                            if cell.rect.width > 220 {
+                                Text(cell.total.money).foregroundStyle(.secondary).monospacedDigit()
+                            }
+                        }
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 5)
+                        .frame(height: Self.header)
+                        .background(.thinMaterial, in: Capsule())
+                        .frame(width: cell.rect.width - 6, height: Self.header, alignment: .leading)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("chart")
-                    .frame(width: cell.rect.width, height: cell.rect.height)
-                    .offset(x: cell.rect.minX, y: cell.rect.minY)
-                }
-                ForEach(cells.groups) { cell in
-                    if cell.rect.width > 60 && cell.rect.height > Self.header * 2 {
-                        Button { navigate(.categories(cell.name)) } label: {
-                            Text("\(store.emoji(for: cell.name)) \(cell.name)")
-                                .font(.caption2.weight(.semibold))
-                                .lineLimit(1)
-                                .padding(.horizontal, 5)
-                                .frame(width: cell.rect.width - 6, height: Self.header, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("chart")
-                        .offset(x: cell.rect.minX + 3, y: cell.rect.minY + 1)
-                    }
+                    .offset(x: cell.rect.minX + 3 + slide.width, y: cell.rect.minY + 1 + slide.height)
                 }
             }
         }
-        .frame(height: height)
-        .padding(.vertical, 4)
     }
 
-    @ViewBuilder private func categoryTile(_ cell: Treemap.Cell, colour: Color) -> some View {
-        let roomy = cell.rect.width > 70 && cell.rect.height > 40
-        let tiny = cell.rect.width < 34 || cell.rect.height < 24
+    /// How far to move a label from a cell's top-left so it stays on screen when the cell is
+    /// partly scrolled out of view (zoomed in), without leaving the cell.
+    static func slide(_ cell: CGRect, toward visible: CGRect, labelHeight: CGFloat) -> CGSize {
+        CGSize(
+            width: min(max(0, visible.minX - cell.minX), max(0, cell.width - 80)),
+            height: min(max(0, visible.minY - cell.minY), max(0, cell.height - labelHeight - 4)))
+    }
+
+    /// A tile label's slide, leaving room for the group's pinned name when both are pinned.
+    static func tileSlide(_ cell: CGRect, toward visible: CGRect, labelHeight: CGFloat) -> CGSize {
+        var slide = slide(cell, toward: visible, labelHeight: labelHeight)
+        if slide.height > 0 {
+            slide.height = min(slide.height + header + 2, max(0, cell.height - labelHeight - 4))
+        }
+        return slide
+    }
+
+    /// What fits in a tile: colour only, then the emoji, then name and amount, then the
+    /// merchant count too, as the tile (or the zoom) grows.
+    @ViewBuilder private func categoryTile(_ cell: Treemap.Cell, colour: Color, visible: CGRect)
+        -> some View
+    {
+        let w = cell.rect.width, h = cell.rect.height
+        let roomy = w > 70 && h > 40
+        let large = w > 150 && h > 90
+        let tiny = w < 34 || h < 24
+        let slide = Self.tileSlide(cell.rect, toward: visible, labelHeight: large ? 54 : 36)
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 4).fill(colour.opacity(roomy ? 0.85 : 0.65))
             if !tiny {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(roomy ? cell.name : store.emoji(for: cell.name))
-                        .font(.caption2.weight(.medium))
+                    Text(roomy ? "\(store.emoji(for: cell.name)) \(cell.name)" : store.emoji(for: cell.name))
+                        .font(large ? .caption.weight(.semibold) : .caption2.weight(.medium))
                         .lineLimit(roomy ? 2 : 1)
                     if roomy {
                         Text(cell.total.money).font(.caption2).monospacedDigit()
                     }
+                    if large {
+                        Text("\(cell.count) transactions").font(.caption2).opacity(0.85)
+                    }
                 }
                 .foregroundStyle(.white)
                 .padding(4)
+                .frame(maxWidth: max(0, w - slide.width), alignment: .leading)
+                .offset(x: slide.width, y: slide.height)
             }
         }
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(cell.name), \(cell.total.money)")
     }
 }
