@@ -8,7 +8,7 @@ import SwiftUI
 /// while two fingers always zoom.
 struct ZoomableChart<Content: View>: View {
     var height: CGFloat
-    var maximum: CGFloat = 5
+    var maximum: CGFloat = 10
     /// A one-finger tap, at a point in the content laid out at the given size.
     var onTap: (CGPoint, CGSize) -> Void = { _, _ in }
     /// The content, laid out to fill the given size; the rectangle is the part of it on
