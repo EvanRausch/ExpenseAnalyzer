@@ -712,6 +712,7 @@ def _phone_row(row: dict) -> dict | None:
     merchant = (row.get("gemini_merchant") or row.get("description") or "").strip()
     return {
         "key": _phone_key(row),
+        "isPending": row.get("pending") == "1",
         "date": day.isoformat(),
         "merchant": merchant or "Unknown",
         "summary": row.get("ai_description") or "",

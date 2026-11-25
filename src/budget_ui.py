@@ -920,10 +920,16 @@ class TransactionModel(QAbstractTableModel):
             return None
         row = self._rows[index.row()]
         col = index.column()
+        pending = row.get("pending") == "1"
         if role in (Qt.DisplayRole, Qt.EditRole):
             val = row.get(_TXN_KEYS[col], "")
             if col == 1:  # Description — prefer ai_description
-                return row.get("ai_description") or row.get("description") or ""
+                text = row.get("ai_description") or row.get("description") or ""
+                return (
+                    f"⏳ {text} (pending)"
+                    if pending and role == Qt.DisplayRole
+                    else text
+                )
             if col == 0:  # Date — apply friendly formatting
                 return _format_date_display(
                     str(val or ""), row.get("source_file") or ""
@@ -934,6 +940,12 @@ class TransactionModel(QAbstractTableModel):
                 except (ValueError, TypeError):
                     return val
             return val
+        if pending and role == Qt.ForegroundRole and col != 6:
+            return QColor("#8a8a8a")  # not posted by the bank yet
+        if pending and role == Qt.ToolTipRole and col in (0, 1, 2):
+            return (
+                "Pending: the bank has not posted this line yet; it may still change."
+            )
         url = str(row.get("place_website", "") or "")
         if col == 6 and url:  # Place column — hyperlink styling
             if role == Qt.ForegroundRole:

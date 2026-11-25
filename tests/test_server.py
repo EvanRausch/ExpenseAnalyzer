@@ -316,6 +316,7 @@ def test_export_is_what_the_mac_app_sends_the_phone(server):
         "phone": "",
         "website": "",
         "notes": "",
+        "isPending": False,
     }
     assert (pay["amount"], pay["isIncome"]) == (-1500.0, True)
     assert [t["bankDescription"] for t in export["trash"]] == ["TRASHED"]
@@ -847,7 +848,9 @@ def test_moving_to_the_two_level_list_keeps_clear_corrections_and_redoes_the_res
         _row(description="DONE", gemini_category="Coffee shops & desserts"),
     ]
     corrections = {"METRO": "Groceries", "RESTO": "Food & Dining", "NEW": "Restaurants"}
-    user_id, headers = _person(server, rows=rows, documents={"corrections": corrections})
+    user_id, headers = _person(
+        server, rows=rows, documents={"corrections": corrections}
+    )
 
     with Session(server.engine) as db:
         assert pipeline.forget_categories(db, user_id) == 2
@@ -866,6 +869,28 @@ def test_moving_to_the_two_level_list_keeps_clear_corrections_and_redoes_the_res
             "METRO": "Supermarkets & grocery stores",
             "NEW": "Restaurants",
         }
+
+
+def test_an_older_database_gets_the_new_columns(tmp_path):
+    from sqlalchemy import text
+
+    url = f"sqlite:///{tmp_path / 'old.db'}"
+    engine = make_engine(url)
+    with engine.begin() as connection:  # a table from before the pending column existed
+        connection.execute(text("ALTER TABLE transactions DROP COLUMN pending"))
+    engine.dispose()
+
+    engine = make_engine(url)
+
+    with Session(engine) as db:
+        user = add_user(db)
+        db.flush()
+        book = Book(db, user.id)
+        book.rows[:] = [_row(pending="1")]
+        book.save()
+        db.commit()
+    with Session(engine) as db:
+        assert db.scalar(select(Transaction.pending)) == "1"
 
 
 def test_the_mac_apps_data_folder_can_be_imported(server, tmp_path):

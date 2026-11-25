@@ -95,6 +95,8 @@ OUTPUT_COLUMNS = [
     "description",
     "amount",
     "cashback_pct",
+    # "1" while the bank has not posted the line yet (Plaid only)
+    "pending",
     # Gemini fields
     "purchase_mode",
     "gemini_merchant",
@@ -152,6 +154,7 @@ def _read_parsed_debit_csv(path: Path) -> list[dict]:
                     "description": desc,
                     "amount": (row.get("amount") or "").strip(),
                     "cashback_pct": "",
+                    "pending": (row.get("pending") or "").strip(),
                 }
             )
     return rows
@@ -172,6 +175,7 @@ def _read_credit_csv(path: Path) -> list[dict]:
                     "description": desc,
                     "amount": (row.get("amount") or "").strip(),
                     "cashback_pct": (row.get("cashback_pct") or "").strip(),
+                    "pending": (row.get("pending") or "").strip(),
                 }
             )
     return rows
@@ -214,6 +218,7 @@ def _read_debit_csv(path: Path) -> list[dict]:
                     "description": desc,
                     "amount": amount,
                     "cashback_pct": "",
+                    "pending": "",
                 }
             )
     return rows

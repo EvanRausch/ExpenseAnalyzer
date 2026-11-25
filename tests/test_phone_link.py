@@ -116,6 +116,7 @@ def test_export_holds_what_the_mac_app_shows(mac):
         "phone": "514-555-0100",
         "website": "https://metro.example",
         "notes": "",
+        "isPending": False,
     }
     assert (pay["amount"], pay["isIncome"]) == (-1500.0, True)
     assert (card_purchase["date"], card_purchase["merchant"]) == (

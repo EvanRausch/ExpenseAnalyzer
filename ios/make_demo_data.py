@@ -60,6 +60,7 @@ def _row(category, merchant, account, date, amount, income=False, index=0):
         "phone": "514-555-0100" if merchant == "Luna Pizzeria" else "",
         "website": "https://luna.example" if merchant == "Luna Pizzeria" else "",
         "notes": "",
+        "isPending": merchant == "Café Olimpico" and index == 0,
     }
 
 

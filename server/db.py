@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 
 from cryptography.fernet import Fernet
-from sqlalchemy import ForeignKey, Text, create_engine, delete, select
+from sqlalchemy import ForeignKey, Text, create_engine, delete, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
@@ -71,6 +71,7 @@ class Transaction(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     amount: Mapped[str] = mapped_column(Text, default="")
     cashback_pct: Mapped[str] = mapped_column(Text, default="")
+    pending: Mapped[str] = mapped_column(Text, default="")
     purchase_mode: Mapped[str] = mapped_column(Text, default="")
     gemini_merchant: Mapped[str] = mapped_column(Text, default="")
     gemini_category: Mapped[str] = mapped_column(Text, default="")
@@ -134,7 +135,25 @@ def make_engine(url: str | None = None) -> Engine:
         # Cloud SQL closes idle connections; pre-ping replaces a closed one instead of failing
         engine = create_engine(_with_driver(url), pool_pre_ping=True)
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     return engine
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    """Add text columns that newer versions gave the transactions table (create_all only
+    makes whole tables)."""
+    existing = {
+        c["name"] for c in inspect(engine).get_columns(Transaction.__tablename__)
+    }
+    with engine.begin() as connection:
+        for column in Transaction.__table__.columns:
+            if column.name not in existing and isinstance(column.type, Text):
+                connection.execute(
+                    text(
+                        f'ALTER TABLE {Transaction.__tablename__} ADD COLUMN "{column.name}" '
+                        "TEXT DEFAULT '' NOT NULL"
+                    )
+                )
 
 
 def _with_driver(url: str) -> str:

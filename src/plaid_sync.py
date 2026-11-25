@@ -42,9 +42,11 @@ load_dotenv(PROJECT_ROOT / ".env")
 HISTORY_DAYS = 730  # the most Plaid offers
 _ACCOUNT_KINDS = {"depository": "debit", "credit": "credit"}
 # Same headers as the parsed statement CSVs, so the enrichment loader reads these unchanged
+# "pending" is "1" while the bank has not yet posted the line; Plaid replaces the pending
+# transaction with the posted one, so the flag clears on a later sync
 _CSV_HEADERS = {
-    "debit": ["date", "description", "amount", "account_type"],
-    "credit": ["date", "description", "amount", "cashback_pct"],
+    "debit": ["date", "description", "amount", "account_type", "pending"],
+    "credit": ["date", "description", "amount", "cashback_pct", "pending"],
 }
 _RANGE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})_to_(\d{4}-\d{2}-\d{2})")
 
@@ -276,11 +278,11 @@ def _write_statement_csvs(state: dict) -> int:
                 txn["description"],
                 f"{txn['amount']:.2f}",
                 "debit" if kind == "debit" else "",
+                "1" if txn["pending"] else "",
             )
             for item in state["items"].values()
             for txn in item["transactions"].values()
-            if not txn["pending"]
-            and txn["description"]
+            if txn["description"]
             and _ACCOUNT_KINDS.get(item["accounts"].get(txn["account_id"])) == kind
             and not any(start <= txn["date"] <= end for start, end in covered)
         )

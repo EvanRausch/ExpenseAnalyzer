@@ -101,7 +101,10 @@ struct TransactionRow: View {
         HStack(spacing: 10) {
             Text(emoji).font(.title2)
             VStack(alignment: .leading, spacing: 2) {
-                Text(transaction.merchant).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(transaction.merchant).lineLimit(1)
+                    if transaction.isPending { PendingBadge() }
+                }
                 Text(
                     transaction.summary.isEmpty ? transaction.bankDescription : transaction.summary
                 )
@@ -112,11 +115,24 @@ struct TransactionRow: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
                 AmountText(amount: transaction.amount)
+                    .opacity(transaction.isPending ? 0.6 : 1)
                 Text(transaction.date.formatted(date: .abbreviated, time: .omitted))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// "Pending": the bank has not posted the line yet.
+struct PendingBadge: View {
+    var body: some View {
+        Text("Pending")
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.quaternary, in: Capsule())
+            .foregroundStyle(.secondary)
     }
 }
 

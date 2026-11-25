@@ -38,7 +38,7 @@ struct ExportTests {
           {"key": "a", "date": "2026-03-02", "merchant": "Metro", "summary": "Groceries at Metro",
            "bankDescription": "ACHAT METRO #123", "amount": 42.5, "category": "Groceries", "account": "debit",
            "isIncome": false, "mode": "in_person", "place": "Metro Plus", "phone": "514-555-0100",
-           "website": "https://metro.example", "notes": ""},
+           "website": "https://metro.example", "notes": "", "isPending": true},
           {"key": "a", "date": "2026-03-02", "merchant": "Metro", "summary": "", "bankDescription": "ACHAT METRO #123",
            "amount": 42.5, "category": "Groceries", "account": "debit", "isIncome": false, "mode": "in_person",
            "place": "", "phone": "", "website": "", "notes": ""},
@@ -61,6 +61,9 @@ struct ExportTests {
         #expect(file.transactions[0].amount == 42.5)
         #expect(file.transactions[2].isIncome)
         #expect(file.transactions[2].size == 2000)
+        // Pending is marked when sent, and simply false in older data without the key
+        #expect(file.transactions[0].isPending)
+        #expect(!file.transactions[1].isPending)
         #expect(file.exportedAt == ISO8601DateFormatter().date(from: "2026-11-21T20:22:56Z"))
         #expect(file.merchantDescriptions["Groceries"]?["Metro"] == "Main shop")
         #expect(file.appliedEdits == ["done"])

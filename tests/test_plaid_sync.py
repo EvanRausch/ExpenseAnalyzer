@@ -89,27 +89,31 @@ def test_sync_writes_csvs_the_enrichment_loader_can_read(plaid, tmp_path):
 
     result = plaid_sync.sync()
 
-    assert result == plaid_sync.SyncResult(new_rows=3, complete=True)
+    assert result == plaid_sync.SyncResult(new_rows=4, complete=True)
     debit_csv = tmp_path / "statements" / "debit" / "plaid_debit.csv"
     credit_csv = tmp_path / "statements" / "credit" / "plaid_credit.csv"
 
     assert enrich_transactions._is_parsed_debit_csv(debit_csv)
     debit = enrich_transactions._read_parsed_debit_csv(debit_csv)
     assert [
-        (r["account_type"], r["date"], r["description"], r["amount"]) for r in debit
+        (r["account_type"], r["date"], r["description"], r["amount"], r["pending"])
+        for r in debit
     ] == [
-        ("debit", "2026-03-02", "ACHAT METRO #123", "42.50"),
-        ("debit", "2026-03-03", "PAIE EMPLOYEUR", "-1500.00"),
+        ("debit", "2026-03-02", "ACHAT METRO #123", "42.50", ""),
+        ("debit", "2026-03-03", "PAIE EMPLOYEUR", "-1500.00", ""),
     ]
 
     assert not enrich_transactions._is_parsed_debit_csv(credit_csv)
     assert enrich_transactions._is_credit_csv(credit_csv)
     credit = enrich_transactions._read_credit_csv(credit_csv)
-    # Pending and investment transactions are left out; the purchase date wins over the posting date
+    # Investment transactions are left out; pending ones are marked; the purchase date
+    # wins over the posting date
     assert [
-        (r["account_type"], r["date"], r["description"], r["amount"]) for r in credit
+        (r["account_type"], r["date"], r["description"], r["amount"], r["pending"])
+        for r in credit
     ] == [
-        ("credit", "2026-03-04", "NETFLIX.COM", "19.99"),
+        ("credit", "2026-03-04", "NETFLIX.COM", "19.99", ""),
+        ("credit", "2026-03-06", "STILL PENDING", "5.00", "1"),
     ]
 
 
@@ -162,6 +166,40 @@ def test_later_sync_resumes_from_cursor_and_applies_changes(plaid, tmp_path):
     assert [(r["description"], r["amount"]) for r in rows] == [
         ("KEPT", "10.00"),
         ("AMOUNT CHANGES", "35.00"),
+    ]
+
+
+def test_a_pending_line_is_replaced_by_the_posted_one(plaid, tmp_path):
+    """Plaid removes the pending transaction and adds the posted one in its place."""
+    plaid.responses.append(
+        _page(
+            added=[_txn("p1", VISA, "2026-03-06", 36.11, "IGA 8093", pending=True)],
+            cursor="c1",
+        )
+    )
+    plaid_sync.sync()
+    credit_csv = tmp_path / "statements" / "credit" / "plaid_credit.csv"
+    rows = enrich_transactions._read_credit_csv(credit_csv)
+    assert [(r["description"], r["amount"], r["pending"]) for r in rows] == [
+        ("IGA 8093", "36.11", "1")
+    ]
+
+    plaid.responses.append(
+        _page(
+            added=[
+                _txn(
+                    "t9", VISA, "2026-03-08", 36.11, "IGA 8093", authorized="2026-03-06"
+                )
+            ],
+            removed=["p1"],
+            cursor="c2",
+        )
+    )
+    plaid_sync.sync()
+
+    rows = enrich_transactions._read_credit_csv(credit_csv)
+    assert [(r["date"], r["description"], r["amount"], r["pending"]) for r in rows] == [
+        ("2026-03-06", "IGA 8093", "36.11", "")
     ]
 
 

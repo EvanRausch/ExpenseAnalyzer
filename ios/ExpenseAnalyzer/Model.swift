@@ -18,12 +18,58 @@ struct Transaction: Identifiable, Hashable, Codable {
     let phone: String
     let website: String
     var notes: String
+    /// Not posted by the bank yet: the amount or wording may still change
+    var isPending = false
 
     var size: Double { abs(amount) }
 
     private enum CodingKeys: String, CodingKey {
         case key, date, merchant, summary, bankDescription, amount, category, account
-        case isIncome, mode, place, phone, website, notes
+        case isIncome, mode, place, phone, website, notes, isPending
+    }
+
+    init(
+        id: String = "", key: String, date: Date, merchant: String, summary: String,
+        bankDescription: String, amount: Double, category: String, account: String,
+        isIncome: Bool, mode: String, place: String, phone: String, website: String,
+        notes: String, isPending: Bool = false
+    ) {
+        self.id = id
+        self.key = key
+        self.date = date
+        self.merchant = merchant
+        self.summary = summary
+        self.bankDescription = bankDescription
+        self.amount = amount
+        self.category = category
+        self.account = account
+        self.isIncome = isIncome
+        self.mode = mode
+        self.place = place
+        self.phone = phone
+        self.website = website
+        self.notes = notes
+        self.isPending = isPending
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        date = try c.decode(Date.self, forKey: .date)
+        merchant = try c.decode(String.self, forKey: .merchant)
+        summary = try c.decode(String.self, forKey: .summary)
+        bankDescription = try c.decode(String.self, forKey: .bankDescription)
+        amount = try c.decode(Double.self, forKey: .amount)
+        category = try c.decode(String.self, forKey: .category)
+        account = try c.decode(String.self, forKey: .account)
+        isIncome = try c.decode(Bool.self, forKey: .isIncome)
+        mode = try c.decode(String.self, forKey: .mode)
+        place = try c.decode(String.self, forKey: .place)
+        phone = try c.decode(String.self, forKey: .phone)
+        website = try c.decode(String.self, forKey: .website)
+        notes = try c.decode(String.self, forKey: .notes)
+        // Absent in data saved by older versions
+        isPending = try c.decodeIfPresent(Bool.self, forKey: .isPending) ?? false
     }
 }
 

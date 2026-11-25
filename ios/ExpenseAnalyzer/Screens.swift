@@ -254,6 +254,13 @@ struct TransactionDetailScreen: View {
                 LabeledContent(
                     "Date", value: transaction.date.formatted(date: .long, time: .omitted))
                 LabeledContent("Account", value: transaction.account.capitalized)
+                if transaction.isPending {
+                    LabeledContent("Status") { PendingBadge() }
+                }
+            } footer: {
+                if transaction.isPending {
+                    Text("The bank has not posted this line yet; the amount or wording may still change.")
+                }
             }
 
             // The Mac only edits transactions that are not in the trash
