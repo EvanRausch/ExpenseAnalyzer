@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from server.book import Book
 from server.db import ROW_FIELDS, Bank, Job, User, banks_of, decrypt, encrypt, now
-from src import ledger, plaid_sync
+from src import enrich_transactions, ledger, plaid_sync
 
 PROJECT_ROOT = Path(__file__).parent.parent
 # Document name -> the file the Mac app keeps it in
@@ -316,3 +316,25 @@ def set_webhook(engine: Engine, banks: list[Bank], url: str) -> None:
             "/item/webhook/update",
             {"access_token": decrypt(engine, bank.access_token), "webhook": url},
         )
+
+
+def forget_categories(db: Session, user_id: str) -> int:
+    """Prepare a person's data for the two-level list: translate their corrections and
+    blank every other category, so the next sync has Gemini choose again.
+    Returns how many rows were blanked."""
+    book = Book(db, user_id)
+    corrections = book.document("corrections", {})
+    translated = enrich_transactions.translate_corrections(
+        corrections, book.custom_categories()
+    )
+    book.set_document("corrections", translated)
+    blanked = 0
+    for row in book.rows:
+        description = row.get("description", "")
+        if description in translated:
+            row["gemini_category"] = translated[description]
+        elif row.get("gemini_category"):
+            row["gemini_category"] = ""
+            blanked += 1
+    book.save()
+    return blanked

@@ -53,7 +53,16 @@ from PySide6.QtCore import (
     QUrl,
     Signal,
 )
-from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QFont, QPainter
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QDesktopServices,
+    QFont,
+    QPainter,
+    QStandardItem,
+    QStandardItemModel,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -66,6 +75,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -85,6 +95,8 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
     QTableView,
     QTableWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QTableWidgetItem,
     QTabWidget,
     QTextBrowser,
@@ -93,6 +105,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src import categories as _taxonomy
 from src import plaid_sync
 from src.ledger import (
     OUTPUT_FILE,
@@ -134,6 +147,73 @@ from src.ledger import (
     spending_rows,
     transfer_rows,
 )
+
+
+def _group_lookup() -> "callable":
+    """A function giving the group (level 1) of a category, for one refresh."""
+    from src.enrich_transactions import load_custom_categories
+
+    custom = load_custom_categories()
+    return lambda category: _taxonomy.group_of(category, custom)
+
+
+def _group_totals(totals: dict[str, dict], group_of) -> dict[str, dict]:
+    """Category totals (as compute_totals returns them) added up per group."""
+    out: dict[str, dict] = {}
+    for category, data in totals.items():
+        acc = out.setdefault(
+            group_of(category), {"count": 0, "total": 0.0, "abs_total": 0.0}
+        )
+        acc["count"] += data["count"]
+        acc["total"] += data["total"]
+        acc["abs_total"] += data["abs_total"]
+    return dict(sorted(out.items(), key=lambda kv: kv[1]["abs_total"], reverse=True))
+
+
+def _fill_category_combo(combo: "QComboBox", categories: list[str]) -> None:
+    """List categories in a combo under their group headings (level 1 of the list).
+
+    Each category item carries its plain name in Qt.UserRole; read it back with
+    _combo_category and select one with _select_category.
+    """
+    from src.enrich_transactions import load_custom_categories
+
+    model = QStandardItemModel(combo)
+    for group, members in _taxonomy.grouped(load_custom_categories(), categories):
+        header = QStandardItem(f"{_ensure_emoji(group)}  {group}")
+        header.setFlags(Qt.NoItemFlags)
+        font = header.font()
+        font.setBold(True)
+        header.setFont(font)
+        model.appendRow(header)
+        for category in members:
+            item = QStandardItem(f"      {_ensure_emoji(category)}  {category}")
+            item.setData(category, Qt.UserRole)
+            model.appendRow(item)
+    combo.setModel(model)
+    # Land on the first category rather than on a heading
+    for row in range(model.rowCount()):
+        if model.item(row).data(Qt.UserRole):
+            combo.setCurrentIndex(row)
+            break
+
+
+def _combo_category(combo: "QComboBox") -> str:
+    """The category chosen in a combo filled by _fill_category_combo, or the text typed."""
+    index = combo.currentIndex()
+    text = combo.currentText()
+    if index >= 0 and combo.itemText(index) == text:
+        return str(combo.itemData(index, Qt.UserRole) or "").strip()
+    return text.strip()
+
+
+def _select_category(combo: "QComboBox", category: str) -> None:
+    """Select a category in a combo filled by _fill_category_combo."""
+    index = combo.findData(category, Qt.UserRole)
+    if index >= 0:
+        combo.setCurrentIndex(index)
+    elif combo.isEditable():
+        combo.setCurrentText(category)
 
 
 def _category_item(label: str) -> "QTableWidgetItem":
@@ -307,124 +387,159 @@ def _fuzzy_score(query: str, blob: str) -> float:
 
 
 class CategoryListEditor(QDialog):
-    """Let the user view, add, and delete categories from the known list.
+    """Show the two-level category list and let the user add, move or delete their own
+    categories (the list's own categories cannot be changed).
 
-    Returns the set of deleted category names so the caller can recategorize
-    only the transactions that belonged to those categories.
+    `final_categories` is the person's own categories (name -> group) to save;
+    `deleted_categories` the names removed, whose transactions need categorising again.
     """
 
     def __init__(self, rows: list[dict], parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Edit Category List")
-        self.resize(480, 600)
+        self.setWindowTitle("Categories")
+        self.resize(560, 640)
         self._rows = rows
         self._deleted: set[str] = set()
-        self._added: set[str] = set()
+        from src.enrich_transactions import load_custom_categories
+
+        self._custom: dict[str, str] = dict(load_custom_categories())
+        # Names found in the data that are in neither list count as the person's own
+        for row in rows:
+            cat = (row.get("gemini_category") or "").strip()
+            if cat and cat not in _taxonomy.GROUP_OF and cat not in self._custom:
+                self._custom[cat] = _taxonomy.OTHER_GROUP
         self._build_ui()
 
-    def _current_categories(self) -> list[str]:
-        """Get the current category list (custom file or hardcoded default)."""
-        from src.enrich_transactions import (
-            _KNOWN_CATEGORIES,
-            load_custom_categories,
-        )
-
-        return load_custom_categories() or list(_KNOWN_CATEGORIES)
+    def _counts(self) -> dict[str, int]:
+        counts: dict[str, int] = defaultdict(int)
+        for row in self._rows:
+            counts[(row.get("gemini_category") or "Other").strip()] += 1
+        return counts
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-
         layout.addWidget(
-            QLabel("Categories used by Gemini for transaction categorization:")
+            QLabel(
+                "Gemini chooses from these categories. Each group also has an "
+                "\u201c\u2026 \u2013 Other\u201d. Your own categories are marked \u2605 "
+                "and can be moved to another group or deleted."
+            )
         )
+        self._tree = QTreeWidget()
+        self._tree.setHeaderLabels(["Category", "Transactions"])
+        self._tree.setColumnWidth(0, 400)
+        self._tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        layout.addWidget(self._tree)
+        self._fill_tree()
 
-        self._list_widget = QListWidget()
-        self._list_widget.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self._list_widget.setSortingEnabled(True)
-
-        # Count transactions per category
-        cat_counts: dict[str, int] = defaultdict(int)
-        for row in self._rows:
-            cat = (row.get("gemini_category") or "Other").strip()
-            cat_counts[cat] += 1
-
-        cats = self._current_categories()
-        # Also include categories in data that aren't in the list
-        data_cats = set(cat_counts.keys())
-        for c in data_cats:
-            if c not in cats:
-                cats.append(c)
-
-        for cat in sorted(cats):
-            count = cat_counts.get(cat, 0)
-            emoji = _ensure_emoji(cat)
-            suffix = f"({count} txns)" if count else "(unused)"
-            label = f"{emoji}  {cat}  {suffix}"
-            item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, cat)
-            self._list_widget.addItem(item)
-
-        layout.addWidget(self._list_widget)
-
-        # Add category row
         add_row = QHBoxLayout()
         self._add_input = QLineEdit()
-        self._add_input.setPlaceholderText("New category name…")
+        self._add_input.setPlaceholderText("New category name\u2026")
         self._add_input.returnPressed.connect(self._add_category)
-        add_row.addWidget(self._add_input)
+        add_row.addWidget(self._add_input, 1)
+        self._add_group = QComboBox()
+        self._add_group.addItems(_taxonomy.GROUP_NAMES + [_taxonomy.OTHER_GROUP])
+        add_row.addWidget(self._add_group)
         add_btn = QPushButton("Add")
         add_btn.clicked.connect(self._add_category)
         add_row.addWidget(add_btn)
         layout.addLayout(add_row)
 
-        # Delete button
+        buttons = QHBoxLayout()
+        move_btn = QPushButton("Move selected to group\u2026")
+        move_btn.clicked.connect(self._move_selected)
+        buttons.addWidget(move_btn)
         del_btn = QPushButton("Delete selected")
         del_btn.clicked.connect(self._delete_selected)
-        layout.addWidget(del_btn)
+        buttons.addWidget(del_btn)
+        buttons.addStretch()
+        layout.addLayout(buttons)
 
-        # Info label
         self._info = QLabel("")
         self._info.setStyleSheet("color: #666; font-style: italic;")
         layout.addWidget(self._info)
 
-        # Dialog buttons
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self._on_ok)
+        btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+    def _fill_tree(self) -> None:
+        counts = self._counts()
+        self._tree.clear()
+        for group, members in _taxonomy.grouped(self._custom):
+            total = sum(counts.get(c, 0) for c in members)
+            top = QTreeWidgetItem(
+                [f"{_ensure_emoji(group)}  {group}", str(total or "")]
+            )
+            font = top.font(0)
+            font.setBold(True)
+            top.setFont(0, font)
+            top.setFlags(Qt.ItemIsEnabled)
+            self._tree.addTopLevelItem(top)
+            for category in members:
+                own = category in self._custom
+                label = f"{_ensure_emoji(category)}  {category}" + (
+                    "  \u2605" if own else ""
+                )
+                child = QTreeWidgetItem([label, str(counts.get(category, 0) or "")])
+                child.setData(0, Qt.UserRole, category)
+                if not own:
+                    child.setForeground(0, QColor("#555"))
+                top.addChild(child)
+            top.setExpanded(total > 0 or any(c in self._custom for c in members))
+
+    def _selected_own(self) -> list[str]:
+        names = [item.data(0, Qt.UserRole) for item in self._tree.selectedItems()]
+        own = [n for n in names if n in self._custom]
+        if len(own) < len([n for n in names if n]):
+            self._info.setText(
+                "Only your own categories (\u2605) can be moved or deleted."
+            )
+        return own
 
     def _add_category(self) -> None:
         name = self._add_input.text().strip()
         if not name:
             return
-        # Check for duplicates
-        for i in range(self._list_widget.count()):
-            if self._list_widget.item(i).data(Qt.UserRole) == name:
-                self._info.setText(f'"{name}" already exists.')
-                return
-        emoji = _ensure_emoji(name)
-        item = QListWidgetItem(f"{emoji}  {name}  (new)")
-        item.setData(Qt.UserRole, name)
-        self._list_widget.addItem(item)
-        self._added.add(name)
+        if name in _taxonomy.GROUP_OF or name in self._custom:
+            self._info.setText(f'"{name}" already exists.')
+            return
+        self._custom[name] = self._add_group.currentText()
         self._add_input.clear()
-        self._info.setText(f'Added "{name}".')
+        self._fill_tree()
+        self._info.setText(f'Added "{name}" to {self._add_group.currentText()}.')
+
+    def _move_selected(self) -> None:
+        own = self._selected_own()
+        if not own:
+            return
+        group, ok = QInputDialog.getItem(
+            self,
+            "Move to group",
+            f"Group for {', '.join(own)}:",
+            _taxonomy.GROUP_NAMES + [_taxonomy.OTHER_GROUP],
+            0,
+            False,
+        )
+        if not ok:
+            return
+        for name in own:
+            self._custom[name] = group
+        self._fill_tree()
+        self._info.setText(
+            f"Moved {len(own)} categor{'y' if len(own) == 1 else 'ies'} to {group}."
+        )
 
     def _delete_selected(self) -> None:
-        selected = self._list_widget.selectedItems()
-        if not selected:
+        own = self._selected_own()
+        if not own:
             return
-        names = [item.data(Qt.UserRole) for item in selected]
-        # Count affected transactions
-        cat_counts: dict[str, int] = defaultdict(int)
-        for row in self._rows:
-            cat = (row.get("gemini_category") or "Other").strip()
-            cat_counts[cat] += 1
-        affected = sum(cat_counts.get(n, 0) for n in names)
-
-        msg = f"Delete {len(names)} categor{'y' if len(names) == 1 else 'ies'}?"
+        counts = self._counts()
+        affected = sum(counts.get(n, 0) for n in own)
+        msg = f"Delete {len(own)} categor{'y' if len(own) == 1 else 'ies'}?"
         if affected:
-            msg += f"\n\n{affected} transaction(s) will be recategorized."
+            msg += f"\n\n{affected} transaction(s) will be categorised again by Gemini."
         reply = QMessageBox.question(
             self,
             "Confirm deletion",
@@ -434,33 +549,21 @@ class CategoryListEditor(QDialog):
         )
         if reply != QMessageBox.Yes:
             return
-        for item in selected:
-            cat_name = item.data(Qt.UserRole)
-            self._deleted.add(cat_name)
-            self._added.discard(cat_name)
-            self._list_widget.takeItem(self._list_widget.row(item))
+        for name in own:
+            self._deleted.add(name)
+            self._custom.pop(name, None)
+        self._fill_tree()
         self._info.setText(
-            f"Deleted {len(names)} categor{'y' if len(names) == 1 else 'ies'}."
+            f"Deleted {len(own)} categor{'y' if len(own) == 1 else 'ies'}."
         )
-
-    def _on_ok(self) -> None:
-        # Build the final category list from what's in the list widget
-        final = []
-        for i in range(self._list_widget.count()):
-            final.append(self._list_widget.item(i).data(Qt.UserRole))
-        # Ensure "Other" is always present as fallback
-        if "Other" not in final:
-            final.append("Other")
-        self._final_categories = sorted(final)
-        self.accept()
 
     @property
     def deleted_categories(self) -> set[str]:
         return self._deleted
 
     @property
-    def final_categories(self) -> list[str]:
-        return getattr(self, "_final_categories", [])
+    def final_categories(self) -> dict[str, str]:
+        return dict(self._custom)
 
 
 class CategoryManagerDialog(QDialog):
@@ -533,7 +636,7 @@ class CategoryManagerDialog(QDialog):
         self._bulk_cat = QComboBox()
         self._bulk_cat.setEditable(True)
         self._bulk_cat.setMinimumWidth(180)
-        self._bulk_cat.addItems(all_categories(self._all_rows))
+        _fill_category_combo(self._bulk_cat, all_categories(self._all_rows))
         bulk_row.addWidget(self._bulk_cat)
         apply_bulk_btn = QPushButton("Apply to selected")
         apply_bulk_btn.clicked.connect(self._apply_bulk)
@@ -659,7 +762,7 @@ class CategoryManagerDialog(QDialog):
                 item.setCheckState(Qt.Unchecked)
 
     def _apply_bulk(self) -> None:
-        new_cat = self._bulk_cat.currentText().strip()
+        new_cat = _combo_category(self._bulk_cat)
         if not new_cat:
             return
         _ensure_emoji(new_cat)
@@ -718,17 +821,15 @@ class _CatEditDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         combo = QComboBox(parent)
         combo.setEditable(True)
-        combo.addItems(self._categories)
-        raw = index.data(Qt.UserRole) or ""
-        combo.setCurrentText(raw)
+        _fill_category_combo(combo, self._categories)
+        _select_category(combo, index.data(Qt.UserRole) or "")
         return combo
 
     def setEditorData(self, editor, index):
-        raw = index.data(Qt.UserRole) or ""
-        editor.setCurrentText(raw)
+        _select_category(editor, index.data(Qt.UserRole) or "")
 
     def setModelData(self, editor, model, index):
-        raw = editor.currentText().strip()
+        raw = _combo_category(editor)
         emoji = _ensure_emoji(raw) if raw else ""
         display = f"{emoji}  {raw}" if emoji else raw
         model.setData(index, display, Qt.DisplayRole)
@@ -746,17 +847,19 @@ class CategoryDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         combo = QComboBox(parent)
         combo.setEditable(True)
-        combo.addItems(self._categories)
-        raw = index.data(Qt.UserRole) or index.data(Qt.DisplayRole) or ""
-        combo.setCurrentText(raw)
+        _fill_category_combo(combo, self._categories)
+        _select_category(
+            combo, index.data(Qt.UserRole) or index.data(Qt.DisplayRole) or ""
+        )
         return combo
 
     def setEditorData(self, editor, index):
-        raw = index.data(Qt.UserRole) or index.data(Qt.DisplayRole) or ""
-        editor.setCurrentText(raw)
+        _select_category(
+            editor, index.data(Qt.UserRole) or index.data(Qt.DisplayRole) or ""
+        )
 
     def setModelData(self, editor, model, index):
-        raw = editor.currentText().strip()
+        raw = _combo_category(editor)
         _ensure_emoji(raw)
         model.setData(index, raw, Qt.EditRole)
 
@@ -1890,6 +1993,8 @@ class SummaryTab(QWidget):
         _s = QSettings("BudgetTracker", "BudgetTracker")
         _saved = _s.value("summary/hidden_cats", [])
         self._hidden_cats: set[str] = set(_saved) if _saved else set()
+        # Drill levels: group (level 1 of the list) -> category -> merchant -> transaction
+        self._drill_group: str | None = None
         self._drill_cat: str | None = None
         self._drill_merchant: str | None = None
         self._table_items: list[tuple[str, dict]] = []
@@ -2020,8 +2125,13 @@ class SummaryTab(QWidget):
 
     def reset_to_root(self) -> None:
         """Reset drill-down to the root category view."""
-        if self._drill_cat is not None or self._drill_merchant is not None:
+        if (
+            self._drill_group is not None
+            or self._drill_cat is not None
+            or self._drill_merchant is not None
+        ):
             self._chart_tooltip.hide()
+            self._drill_group = None
             self._drill_cat = None
             self._drill_merchant = None
             self.refresh()
@@ -2103,6 +2213,9 @@ class SummaryTab(QWidget):
 
     def refresh(self):
         rows = self._filtered_rows()
+        group_of = _group_lookup()
+        # True while the top level (the groups) is shown
+        at_groups = self._drill_group is None and self._drill_cat is None
 
         # ── Determine display data: level 0 / 1 / 2 ────────────────────
         if self._drill_cat is not None and self._drill_merchant is not None:
@@ -2141,13 +2254,39 @@ class SummaryTab(QWidget):
             self._back_btn.setText("← All categories")
             self._back_btn.show()
             self._hide_btn.setVisible(False)
-        else:
-            # Level 0 — all categories
+        elif self._drill_group is not None:
+            # Level 0b — the categories of one group
             cat_rows = []
-            totals_all = compute_totals(rows)
-            # Stable color index: based on full sort order (before hiding)
+            group_rows = [
+                r for r in rows if group_of(_effective_category(r)) == self._drill_group
+            ]
+            totals_all = compute_totals(group_rows)
             _cat_color_idx = {cat: i for i, cat in enumerate(totals_all.keys())}
             totals = {k: v for k, v in totals_all.items() if k not in self._hidden_cats}
+            totals_list = list(totals.items())
+            grand = sum(v["abs_total"] for v in totals.values()) or 1.0
+            chart_title = f"{self._drill_group} — by Category"
+            tooltip_source = group_rows
+            in_drill = False
+            level = 0
+            self._count_label.setText(
+                f"{len(group_rows)} transactions in «{self._drill_group}»"
+            )
+            self._back_btn.setText("← All groups")
+            self._back_btn.show()
+            self._hide_btn.setVisible(True)
+        else:
+            # Level 0 — the groups (level 1 of the two-level list)
+            cat_rows = []
+            totals_cats = {
+                k: v
+                for k, v in compute_totals(rows).items()
+                if k not in self._hidden_cats
+            }
+            totals_all = _group_totals(totals_cats, group_of)
+            # Stable color index: based on full sort order (before hiding)
+            _cat_color_idx = {cat: i for i, cat in enumerate(totals_all.keys())}
+            totals = totals_all
             totals_list = list(totals.items())
             grand = sum(v["abs_total"] for v in totals.values()) or 1.0
             chart_title = "Expenses"
@@ -2210,6 +2349,8 @@ class SummaryTab(QWidget):
             g=grand,
             tooltip=tt,
             lv=level,
+            grp=at_groups,
+            gof=group_of,
         ):
             if state:
                 entry = sm.get(id(slc))
@@ -2227,6 +2368,14 @@ class SummaryTab(QWidget):
                                 or ""
                             ).strip()
                             == lbl
+                        ]
+                        tooltip.show_at(
+                            QCursor.pos(),
+                            _build_tooltip(lbl, d, g, r, matched_rows=matched),
+                        )
+                    elif grp:
+                        matched = [
+                            row for row in r if gof(_effective_category(row)) == lbl
                         ]
                         tooltip.show_at(
                             QCursor.pos(),
@@ -2331,6 +2480,8 @@ class SummaryTab(QWidget):
             g=grand,
             tooltip=tt,
             lv=level,
+            grp=at_groups,
+            gof=group_of,
         ):
             if status and 0 <= index < len(ti):
                 lbl, d = ti[index]
@@ -2345,6 +2496,12 @@ class SummaryTab(QWidget):
                         ).strip()
                         == lbl
                     ]
+                    tooltip.show_at(
+                        QCursor.pos(),
+                        _build_tooltip(lbl, d, g, r, matched_rows=matched),
+                    )
+                elif grp:
+                    matched = [row for row in r if gof(_effective_category(row)) == lbl]
                     tooltip.show_at(
                         QCursor.pos(),
                         _build_tooltip(lbl, d, g, r, matched_rows=matched),
@@ -2387,16 +2544,10 @@ class SummaryTab(QWidget):
         self._bar_view.setFixedSize(chart_w, chart_h)
 
         # ── Table ─────────────────────────────────────────────────────────
-        self._table.setHorizontalHeaderItem(
-            0,
-            QTableWidgetItem(
-                "Transaction"
-                if level == 2
-                else ("Merchant" if level == 1 else "Category")
-            ),
-        )
         col0_label = (
-            "Transaction" if level == 2 else ("Merchant" if level == 1 else "Category")
+            "Transaction"
+            if level == 2
+            else ("Merchant" if level == 1 else ("Group" if at_groups else "Category"))
         )
         for tbl in (self._table,):
             tbl.setHorizontalHeaderItem(0, QTableWidgetItem(col0_label))
@@ -2429,10 +2580,13 @@ class SummaryTab(QWidget):
         if not in_drill:
             self._update_hide_btn()
 
-    def _drill_into(self, cat: str) -> None:
-        """Switch charts to merchant breakdown for the given category."""
+    def _drill_into(self, label: str) -> None:
+        """From the groups, show one group's categories; from there, one category's merchants."""
         self._chart_tooltip.hide()
-        self._drill_cat = cat
+        if self._drill_group is None:
+            self._drill_group = label
+        else:
+            self._drill_cat = label
         self._drill_merchant = None
         self.refresh()
 
@@ -2462,12 +2616,14 @@ class SummaryTab(QWidget):
             self._drill_into(label)
 
     def _back_to_top(self) -> None:
-        """Step up one drill level (merchant → category, or category → all)."""
+        """Step up one drill level (merchant → category → group → all groups)."""
         self._chart_tooltip.hide()
         if self._drill_merchant is not None:
             self._drill_merchant = None
-        else:
+        elif self._drill_cat is not None:
             self._drill_cat = None
+        else:
+            self._drill_group = None
         self.refresh()
 
     def _show_transaction_detail(self, row: dict) -> None:
@@ -2915,32 +3071,61 @@ class TransactionsTab(QWidget):
             _all_pct.setData(Qt.DisplayRole, 100.0)
             _all_pct.setFont(_bf)
             self._summary_table.setItem(0, 4, _all_pct)
-            # ── Data rows ───────────────────────────────────────────────────
-            for row_i, (label, data) in enumerate(totals_list, start=1):
-                pct = data["abs_total"] / grand * 100
-                label_item = _category_item(label)
-                self._summary_table.setItem(row_i, 0, label_item)
-                desc_text = cat_descs.get(label, "")
-                desc_item = QTableWidgetItem(desc_text if desc_text else "…")
-                if not desc_text:
-                    f = desc_item.font()
-                    f.setItalic(True)
-                    desc_item.setFont(f)
-                    desc_item.setForeground(QColor("#888888"))
-                self._summary_table.setItem(row_i, 1, desc_item)
-                amt_item = self._make_amount_item(data["total"], data["abs_total"])
-                self._summary_table.setItem(row_i, 2, amt_item)
-                cnt_item = _NumericItem("")
-                cnt_item.setData(Qt.UserRole, data["count"])
-                cnt_item.setData(Qt.DisplayRole, data["count"])
-                self._summary_table.setItem(row_i, 3, cnt_item)
-                pct_item = _NumericItem("")
-                pct_item.setData(Qt.UserRole, round(pct, 1))
-                pct_item.setData(Qt.DisplayRole, round(pct, 1))
-                self._summary_table.setItem(row_i, 4, pct_item)
-            self._summary_table.setSortingEnabled(True)
-            self._summary_table.sortItems(2, Qt.DescendingOrder)
-            self._count_label.setText(f"{len(totals_list)} categories")
+            # ── Data rows: each group (level 1 of the list), then its categories ──
+            group_of = _group_lookup()
+            group_totals = _group_totals(totals, group_of)
+            self._summary_table.setRowCount(1 + len(group_totals) + len(totals_list))
+            row_i = 1
+            for group, gdata in group_totals.items():
+                head = QTableWidgetItem(f"{_ensure_emoji(group)}  {group}")
+                head.setFont(_bf)
+                head.setFlags(Qt.ItemIsEnabled)  # a heading, not a category to open
+                self._summary_table.setItem(row_i, 0, head)
+                self._summary_table.setItem(row_i, 1, QTableWidgetItem(""))
+                g_amt = self._make_amount_item(gdata["total"], gdata["abs_total"])
+                g_amt.setFont(_bf)
+                self._summary_table.setItem(row_i, 2, g_amt)
+                g_cnt = _NumericItem("")
+                g_cnt.setData(Qt.DisplayRole, gdata["count"])
+                g_cnt.setFont(_bf)
+                self._summary_table.setItem(row_i, 3, g_cnt)
+                g_pct = _NumericItem("")
+                g_pct.setData(
+                    Qt.DisplayRole, round(gdata["abs_total"] / grand * 100, 1)
+                )
+                g_pct.setFont(_bf)
+                self._summary_table.setItem(row_i, 4, g_pct)
+                row_i += 1
+                members = [(c, d) for c, d in totals_list if group_of(c) == group]
+                for label, data in members:
+                    pct = data["abs_total"] / grand * 100
+                    label_item = _category_item(label)
+                    label_item.setText("      " + label_item.text())
+                    self._summary_table.setItem(row_i, 0, label_item)
+                    desc_text = cat_descs.get(label, "")
+                    desc_item = QTableWidgetItem(desc_text if desc_text else "…")
+                    if not desc_text:
+                        f = desc_item.font()
+                        f.setItalic(True)
+                        desc_item.setFont(f)
+                        desc_item.setForeground(QColor("#888888"))
+                    self._summary_table.setItem(row_i, 1, desc_item)
+                    amt_item = self._make_amount_item(data["total"], data["abs_total"])
+                    self._summary_table.setItem(row_i, 2, amt_item)
+                    cnt_item = _NumericItem("")
+                    cnt_item.setData(Qt.UserRole, data["count"])
+                    cnt_item.setData(Qt.DisplayRole, data["count"])
+                    self._summary_table.setItem(row_i, 3, cnt_item)
+                    pct_item = _NumericItem("")
+                    pct_item.setData(Qt.UserRole, round(pct, 1))
+                    pct_item.setData(Qt.DisplayRole, round(pct, 1))
+                    self._summary_table.setItem(row_i, 4, pct_item)
+                    row_i += 1
+            # Groups and their categories are already ordered by amount; sorting would
+            # mix the headings in with the categories
+            self._count_label.setText(
+                f"{len(totals_list)} categories in {len(group_totals)} groups"
+            )
             self._back_btn.setVisible(False)
             self._breadcrumb.setVisible(False)
             self._search_widget.setVisible(False)
@@ -3438,7 +3623,9 @@ class StatisticsTab(QWidget):
         cat_hdr.addWidget(QLabel("<b>Category Breakdown:</b>"))
         self._cat_combo = QComboBox()
         self._cat_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        self._cat_combo.addItems(all_categories(spending_rows(self._all_rows)))
+        _fill_category_combo(
+            self._cat_combo, all_categories(spending_rows(self._all_rows))
+        )
         self._cat_combo.currentIndexChanged.connect(self._refresh_category)
         cat_hdr.addWidget(self._cat_combo)
         cat_hdr.addStretch()
@@ -3655,7 +3842,7 @@ class StatisticsTab(QWidget):
         self._monthly_chart_view.setChart(chart)
 
     def _refresh_category(self) -> None:
-        cat = self._cat_combo.currentText()
+        cat = _combo_category(self._cat_combo)
         if not cat:
             return
         rows = spending_rows(self._all_rows)
@@ -3764,13 +3951,12 @@ class StatisticsTab(QWidget):
 
     def update_data(self, rows: list[dict]) -> None:
         self._all_rows = rows
-        prev = self._cat_combo.currentText()
+        prev = _combo_category(self._cat_combo)
         cats = all_categories(spending_rows(rows))
         self._cat_combo.blockSignals(True)
-        self._cat_combo.clear()
-        self._cat_combo.addItems(cats)
+        _fill_category_combo(self._cat_combo, cats)
         if prev in cats:
-            self._cat_combo.setCurrentText(prev)
+            _select_category(self._cat_combo, prev)
         self._cat_combo.blockSignals(False)
         self._refresh_all()
         # Auto-regenerate if cache is missing or stale

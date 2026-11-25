@@ -18,6 +18,8 @@ import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from src import categories
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -58,55 +60,14 @@ except Exception:
     _GEMINI_KEY = ""
 
 # ---------------------------------------------------------------------------
-# All known categories (used for drop-downs)
+# Categories: the two-level list in src/categories.py, plus the person's own
 # ---------------------------------------------------------------------------
 
-KNOWN_CATEGORIES = [
-    "Amazon Purchase",
-    "Apple Services",
-    "Streaming",
-    "Software/SaaS",
-    "Rent",
-    "Ride-sharing",
-    "Food Delivery",
-    "Groceries",
-    "Food & Dining",
-    "Pharmacy",
-    "Health & Medical",
-    "Dentist/Medical",
-    "Clothing & Fashion",
-    "Electronics",
-    "Entertainment",
-    "Transport",
-    "Automotive",
-    "Travel & Accommodation",
-    "Utilities",
-    "Telecom & Internet",
-    "Payroll / Income",
-    "Interac Transfer",
-    "Bill Payment",
-    "Investment",
-    "Insurance",
-    "Bank Fee",
-    "Government",
-    "Education",
-    "Charity",
-    "Sports & Fitness",
-    "Golf",
-    "Ski",
-    "Pets",
-    "Cat",
-    "Personal Care",
-    "ATM",
-    "Bars/Festivals/Alcohol",
-    "Weed",
-    "Hydro",
-    "e-Commerce / Online Shopping",
-    "Other",
-]
+KNOWN_CATEGORIES = list(categories.ALL_CATEGORIES)
 
-# Emoji icons shown next to each category name in tables
-_CATEGORY_EMOJI: dict[str, str] = {
+# Emoji icons shown next to each category name in tables: the list's, then the names
+# from before the list (still found in old data), then the group names
+_LEGACY_EMOJI: dict[str, str] = {
     "Amazon Purchase": "📦",
     "Apple Services": "🍎",
     "Streaming": "🎬",
@@ -149,6 +110,11 @@ _CATEGORY_EMOJI: dict[str, str] = {
     "Hydro": "⚡",
     "Ski": "⛷️",
     "Weed": "🌿",
+}
+_CATEGORY_EMOJI: dict[str, str] = {
+    **_LEGACY_EMOJI,
+    **categories.CATEGORY_EMOJI,
+    **categories.GROUP_EMOJI,
 }
 # The table above, before any emojis saved for one person's own categories are merged in
 BUILT_IN_EMOJI = dict(_CATEGORY_EMOJI)
@@ -456,9 +422,12 @@ def _is_cc_bill_payment(row: dict) -> bool:
         return False
     merchant = (row.get("gemini_merchant") or "").lower()
     # "Remises" is the French name of the Cash Back card
-    return (
-        any(name in merchant for name in ("visa", "desjardins", "cash back", "remises"))
-        and row.get("gemini_category") == "Bill Payment"
+    return any(
+        name in merchant for name in ("visa", "desjardins", "cash back", "remises")
+    ) and row.get("gemini_category") in (
+        "Bill Payment",
+        "Credit-card payments",
+        "Bill payments to unrecognised payees",
     )
 
 
@@ -470,10 +439,13 @@ def _is_garbled_credit_transfer(row: dict) -> bool:
     )
 
 
+TRANSFER_CATEGORIES = ("Transfers to people", "Interac Transfer")
+
+
 def _is_incoming_transfer(row: dict) -> bool:
     """Interac e-Transfer received (amount is negative in debit format)."""
     return (
-        row.get("gemini_category") == "Interac Transfer"
+        row.get("gemini_category") in TRANSFER_CATEGORIES
         and _parse_amount(row.get("amount", 0)) < 0
         and row.get("account_type") == "debit"
     )
@@ -608,12 +580,11 @@ def _effective_category(row: dict) -> str:
     """Return the display category; maps known rent payees to 'Rent' and
     groups all other Interac e-transfers under 'Interac Transfer'."""
     cat = (row.get("gemini_category") or "Other").strip() or "Other"
-    if cat == "Interac Transfer":
+    if cat in TRANSFER_CATEGORIES:
         merchant = (row.get("gemini_merchant") or "").strip()
         if merchant and merchant != "Interac Transfer":
             if any(name in merchant.lower() for name in _RENT_INTERAC_NAMES):
                 return "Rent"
-        return "Interac Transfer"
     return cat
 
 
@@ -650,8 +621,22 @@ class FileStore:
     def known_categories(self) -> list[str]:
         return _get_known_categories()
 
+    def custom_categories(self) -> dict[str, str]:
+        """The person's own categories: name -> group."""
+        from src.enrich_transactions import load_custom_categories
+
+        return load_custom_categories()
+
+    def save_custom_category(self, name: str, group: str) -> None:
+        from src.enrich_transactions import save_custom_categories
+
+        save_custom_categories({**self.custom_categories(), name: group})
+
     def emoji(self, category: str) -> str:
         return _ensure_emoji(category)
+
+    def group_of(self, category: str) -> str:
+        return categories.group_of(category, self.custom_categories())
 
     def summary_descriptions(self) -> dict:
         return _load_summary_descs()
@@ -748,17 +733,30 @@ def _phone_edits(folder: Path) -> list[dict]:
 def phone_export(rows: list[dict], store, applied_edits=()) -> dict:
     """Everything the iPhone app displays."""
     transactions = [p for r in visible_rows(rows, store) if (p := _phone_row(r))]
-    categories = sorted(
-        set(all_categories(rows, store)) | {t["category"] for t in transactions}
+    trash = [p for r in store.trash() if (p := _phone_row(r))]
+    names = sorted(
+        set(all_categories(rows, store)) | {t["category"] for t in transactions + trash}
     )
+    groups = categories.grouped(store.custom_categories(), names)
     descriptions = store.summary_descriptions()
     return {
         "exportedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "appliedEdits": sorted(applied_edits),
         "transactions": transactions,
-        "trash": [p for r in store.trash() if (p := _phone_row(r))],
-        "categories": categories,
-        "emojis": {c: store.emoji(c) for c in categories},
+        "trash": trash,
+        "categories": names,
+        "groups": [
+            {
+                "name": group,
+                "emoji": categories.GROUP_EMOJI.get(group, "🏷️"),
+                "categories": members,
+            }
+            for group, members in groups
+        ],
+        "emojis": {
+            **{c: store.emoji(c) for c in names},
+            **{group: categories.GROUP_EMOJI.get(group, "🏷️") for group, _ in groups},
+        },
         "categoryDescriptions": descriptions.get("categories", {}),
         "merchantDescriptions": descriptions.get("merchants", {}),
         "officialIncomeSources": sorted(store.official_sources()),
@@ -793,7 +791,12 @@ def apply_edit(rows: list[dict], edit: dict, store) -> None:
     value = str(edit.get("value", ""))
     keys = {k for k in edit.get("keys", []) if isinstance(k, str)}
     matching = [r for r in rows if _phone_key(r) in keys]
-    if kind == "setCategory" and value:
+    if kind == "createCategory" and value:
+        group = str(edit.get("group", ""))
+        store.save_custom_category(
+            value, group if group in categories.GROUP_EMOJI else categories.OTHER_GROUP
+        )
+    elif kind == "setCategory" and value:
         for row in matching:
             apply_category_change(
                 rows, row, value, row.get("gemini_category", ""), store
@@ -845,10 +848,10 @@ def apply_phone_edits(
 
 
 def _get_known_categories() -> list[str]:
-    """Return the user's custom category list if it exists, else the hardcoded default."""
+    """The list's categories followed by the person's own."""
     from src.enrich_transactions import load_custom_categories
 
-    return load_custom_categories() or list(KNOWN_CATEGORIES)
+    return categories.known_categories(load_custom_categories())
 
 
 def all_categories(rows: list[dict], store=None) -> list[str]:

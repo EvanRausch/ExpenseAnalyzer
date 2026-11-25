@@ -63,10 +63,18 @@ class AppleSignIn(BaseModel):
 
 class Edit(BaseModel):
     type: Literal[
-        "setCategory", "setNote", "trash", "restore", "markOfficial", "unmarkOfficial"
+        "setCategory",
+        "setNote",
+        "trash",
+        "restore",
+        "markOfficial",
+        "unmarkOfficial",
+        "createCategory",
     ]
     keys: list[str] = Field(default_factory=list, max_length=5000)
     value: str = Field(default="", max_length=2000)
+    # The group of a category made on the phone
+    group: str = Field(default="", max_length=200)
 
 
 class Edits(BaseModel):

@@ -6,6 +6,8 @@ cli.py — run and administer the server from the terminal.
     python -m server.cli import-mac       create an account holding the Mac app's data
     python -m server.cli new-token        print a fresh token for the account (one account)
     python -m server.cli set-webhook URL  tell Plaid where to announce new transactions
+    python -m server.cli recategorise     have Gemini categorise everyone's data again with
+                                          the two-level list (runs the pipeline from here)
 
 The printed token is what the app sends as "Authorization: Bearer <token>"; the iPhone app
 accepts it on its sign-in screen. Signing in with Apple later from that phone attaches the
@@ -33,6 +35,7 @@ from server.app import create_app
 from server.db import (
     PROJECT_ROOT,
     Bank,
+    Job,
     Transaction,
     User,
     add_login,
@@ -70,6 +73,10 @@ def main() -> None:
         "set-webhook", help="point every connected bank at the server's webhook"
     )
     hook.add_argument("url", help="the address ending in /plaid/webhook")
+    commands.add_parser(
+        "recategorise",
+        help="categorise every transaction again with the two-level list",
+    )
     args = parser.parse_args()
 
     engine = make_engine()
@@ -84,6 +91,28 @@ def main() -> None:
             token = add_login(db, users[0])
             db.commit()
         print(f"Token: {token}")
+        return
+    if args.command == "recategorise":
+        with Session(engine) as db:
+            user_ids = list(db.scalars(select(User.id)))
+            for user_id in user_ids:
+                blanked = pipeline.forget_categories(db, user_id)
+                print(
+                    f"Account {user_id[:8]}…: {blanked} transactions to categorise again."
+                )
+            db.commit()
+        for user_id in user_ids:
+            if not pipeline.start_job(engine, user_id):
+                sys.exit(
+                    f"A sync is already running for {user_id[:8]}…; try again later."
+                )
+            print(
+                f"Running the pipeline for {user_id[:8]}… (a few minutes)…", flush=True
+            )
+            pipeline.run_job(engine, user_id)
+            with Session(engine) as db:
+                job = db.get(Job, user_id)
+                print(f"  {'failed: ' + job.error if job.error else 'done'}")
         return
     if args.command == "set-webhook":
         with Session(engine) as db:

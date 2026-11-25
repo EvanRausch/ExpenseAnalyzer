@@ -287,7 +287,7 @@ def test_export_is_what_the_mac_app_sends_the_phone(server):
         rows=rows,
         trash=[_row(description="TRASHED", amount="9.99")],
         documents={
-            "custom_categories": ["Groceries", "Chat", "Voyages"],
+            "custom_categories": {"Chat": "", "Voyages": "Travel"},
             "emojis": {"Chat": "🐈", "Groceries": "🥦", "Voyages": "not an emoji"},
             "summary_descriptions": {
                 "categories": {"Groceries": "Food shops"},
@@ -319,17 +319,25 @@ def test_export_is_what_the_mac_app_sends_the_phone(server):
     }
     assert (pay["amount"], pay["isIncome"]) == (-1500.0, True)
     assert [t["bankDescription"] for t in export["trash"]] == ["TRASHED"]
-    assert export["categories"] == [
+    # The two-level list's categories plus what the data and the person's own list hold
+    assert set(export["categories"]) > {
         "Bill Payment",
         "Chat",
         "Groceries",
         "Payroll / Income",
         "Voyages",
-    ]
+        "Restaurants",
+    }
+    assert export["categories"] == sorted(export["categories"])
+    placed = {g["name"]: g["categories"] for g in export["groups"]}
+    assert "Restaurants" in placed["Food & drink"]
+    assert "Voyages" in placed["Travel"]  # the person's own category, in its group
+    assert "Chat" in placed["Other"]  # a name from an older list, without a group
     # Built-in emojis win, then the person's own, then a plain tag
     assert export["emojis"]["Groceries"] == "🛒"
     assert export["emojis"]["Chat"] == "🐈"
     assert export["emojis"]["Voyages"] == "🏷️"
+    assert export["emojis"]["Food & drink"] == "🍽️"
     assert export["categoryDescriptions"] == {"Groceries": "Food shops"}
     assert export["merchantDescriptions"] == {"Groceries": {"Metro": "Weekly shop"}}
     assert export["officialIncomeSources"] == ["Employer"]
@@ -342,7 +350,7 @@ def test_a_new_account_starts_empty(server):
     export = _export(server, headers)
 
     assert export["transactions"] == export["trash"] == []
-    assert "Groceries" in export["categories"]
+    assert "Restaurants" in export["categories"]
     assert export["aiAnalysis"] == ""
     status = server.client.get("/v1/status", headers=headers).json()
     assert status == {"banks": [], "syncing": False, "lastSync": None, "error": ""}
@@ -421,6 +429,30 @@ def test_people_only_see_and_change_their_own_data(server):
     assert bens["officialIncomeSources"] == ["Ben Inc"]
     with Session(server.engine) as db:
         assert Book(db, ben_id).document("corrections", {}) == {}
+
+
+def test_a_category_made_on_the_phone_joins_its_group(server):
+    _, headers = _person(server, rows=[_row()])
+
+    export = server.client.post(
+        "/v1/edits",
+        headers=headers,
+        json={
+            "edits": [
+                {"type": "createCategory", "value": "Snacks", "group": "Food & drink"},
+                {"type": "setCategory", "keys": [_key(_row())], "value": "Snacks"},
+                {"type": "createCategory", "value": "Odd", "group": "No such group"},
+            ]
+        },
+    ).json()
+
+    placed = {g["name"]: g["categories"] for g in export["groups"]}
+    assert "Snacks" in placed["Food & drink"]
+    assert "Odd" in placed["Other"]
+    assert export["transactions"][0]["category"] == "Snacks"
+    with Session(server.engine) as db:
+        saved = db.scalar(select(Document).where(Document.name == "custom_categories"))
+        assert json.loads(saved.body) == {"Snacks": "Food & drink", "Odd": "Other"}
 
 
 def test_malformed_changes_are_rejected(server):
@@ -804,6 +836,36 @@ def test_a_failed_sync_changes_nothing_and_says_why(server):
     assert pipeline.start_job(server.engine, user_id)
 
 
+def test_moving_to_the_two_level_list_keeps_clear_corrections_and_redoes_the_rest(
+    server,
+):
+    rows = [
+        _row(description="METRO", gemini_category="Groceries"),
+        _row(description="RESTO", gemini_category="Food & Dining"),
+        _row(description="BAR", gemini_category="Food & Dining"),
+        _row(description="NEW", gemini_category="Restaurants"),
+    ]
+    corrections = {"METRO": "Groceries", "RESTO": "Food & Dining", "NEW": "Restaurants"}
+    user_id, headers = _person(server, rows=rows, documents={"corrections": corrections})
+
+    with Session(server.engine) as db:
+        assert pipeline.forget_categories(db, user_id) == 2
+        db.commit()
+
+    with Session(server.engine) as db:
+        book = Book(db, user_id)
+        assert {r["description"]: r["gemini_category"] for r in book.rows} == {
+            "METRO": "Supermarkets & grocery stores",  # renamed: the match is clear
+            "RESTO": "",  # "Food & Dining" could be several things: Gemini decides
+            "BAR": "",
+            "NEW": "Restaurants",  # already a name of the list
+        }
+        assert book.document("corrections", {}) == {
+            "METRO": "Supermarkets & grocery stores",
+            "NEW": "Restaurants",
+        }
+
+
 def test_the_mac_apps_data_folder_can_be_imported(server, tmp_path):
     data = tmp_path / "mac" / "data"
     (data / "statements" / "debit").mkdir(parents=True)
@@ -846,7 +908,7 @@ def test_the_mac_apps_data_folder_can_be_imported(server, tmp_path):
         "SECOND",
     ]
     assert [t["bankDescription"] for t in export["trash"]] == ["TRASHED"]
-    assert export["categories"] == ["Groceries", "Voyages"]
+    assert {"Groceries", "Voyages", "Restaurants"} < set(export["categories"])
     assert export["officialIncomeSources"] == ["Employer"]
     assert export["aiAnalysis"] == "## Mac"
     assert server.client.get("/v1/status", headers=headers).json()["banks"] == [

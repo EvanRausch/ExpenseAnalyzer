@@ -33,6 +33,8 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types as genai_types
 
+from src import categories
+
 # ---------------------------------------------------------------------------
 # Paths & runtime config
 # ---------------------------------------------------------------------------
@@ -929,88 +931,45 @@ def _enrich_post_places(
 # Final categorization: dedicated Gemini pass using ALL enriched data
 # ---------------------------------------------------------------------------
 
-# Base known categories — matches ledger.py KNOWN_CATEGORIES
-_KNOWN_CATEGORIES = [
-    "Amazon Purchase",
-    "Apple Services",
-    "Streaming",
-    "Software/SaaS",
-    "Rent",
-    "Ride-sharing",
-    "Food Delivery",
-    "Groceries",
-    "Food & Dining",
-    "Pharmacy",
-    "Health & Medical",
-    "Dentist/Medical",
-    "Clothing & Fashion",
-    "Electronics",
-    "Entertainment",
-    "Transport",
-    "Automotive",
-    "Travel & Accommodation",
-    "Utilities",
-    "Hydro",
-    "Telecom & Internet",
-    "Payroll / Income",
-    "Interac Transfer",
-    "Bill Payment",
-    "Investment",
-    "Insurance",
-    "Bank Fee",
-    "ATM",
-    "Government",
-    "Education",
-    "Charity",
-    "Sports & Fitness",
-    "Golf",
-    "Ski",
-    "Pets",
-    "Cat",
-    "Personal Care",
-    "Bars/Festivals/Alcohol",
-    "Weed",
-    "e-Commerce / Online Shopping",
-    "Other",
-]
-
 
 def _build_known_categories_list() -> list[str]:
-    """Return deduped list of known categories.
-
-    If custom_categories.json exists, use it as the base list.
-    Otherwise fall back to the hardcoded _KNOWN_CATEGORIES.
-    Merge in any extras from category_emojis.json.
-    """
-    cats = load_custom_categories() or list(_KNOWN_CATEGORIES)
-    try:
-        if CATEGORY_EMOJI_FILE.exists():
-            emojis = json.loads(CATEGORY_EMOJI_FILE.read_text(encoding="utf-8"))
-            for cat in emojis:
-                if cat not in cats:
-                    cats.append(cat)
-    except Exception:
-        pass
-    return cats
+    """The two-level list's categories followed by the person's own."""
+    return categories.known_categories(load_custom_categories())
 
 
-def load_custom_categories() -> list[str] | None:
-    """Load the user-defined category list from disk, or None if not set."""
+def load_custom_categories() -> dict[str, str]:
+    """The person's own categories, name -> group. A list saved by an older version
+    (names without groups) is read as belonging to the group "Other"."""
     try:
         if CUSTOM_CATEGORIES_FILE.exists():
             data = json.loads(CUSTOM_CATEGORIES_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, list) and data:
-                return data
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items() if k}
+            if isinstance(data, list):
+                # Older versions saved the whole list; only the person's additions count
+                return {
+                    str(name): categories.OTHER_GROUP
+                    for name in data
+                    if name and name not in categories.LEGACY
+                }
     except Exception:
         pass
-    return None
+    return {}
 
 
-def save_custom_categories(categories: list[str]) -> None:
-    """Persist the user-defined category list to disk."""
+def save_custom_categories(custom: dict[str, str]) -> None:
+    """Persist the person's own categories (name -> group) to disk."""
     CUSTOM_CATEGORIES_FILE.parent.mkdir(parents=True, exist_ok=True)
     CUSTOM_CATEGORIES_FILE.write_text(
-        json.dumps(categories, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(custom, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _categories_for_prompt(custom: dict[str, str]) -> str:
+    """The list as Gemini sees it: one line per group."""
+    return "\n".join(
+        f"    {group}: " + "; ".join(members)
+        for group, members in categories.grouped(custom)
     )
 
 
@@ -1025,22 +984,25 @@ Given a JSON array of objects, each with:
   "ai_description" — human-readable description of the transaction
 
 Return a JSON array in the EXACT SAME ORDER with one object per item.
-Each object must have exactly these keys:
-  "category": the single best spending category for this transaction.
-    STRONGLY prefer one of these existing categories:
-    {categories}
+Each object must have exactly one key:
+  "category": the single best category for this transaction, copied EXACTLY
+    (same spelling, same punctuation) from this list. The list has groups; each line
+    is one group followed by its categories:
+{categories}
 
-    Parse through ALL the categories above before choosing.
-    Pick the one that fits the transaction BEST based on all available data.
-    Use place_types and place_name when available — they are very reliable.
-    Use merchant_name, ai_description, and purchase_mode to inform your choice.
-
-    If NONE of the above categories is a good fit, you MAY invent a new short
-    category name (2-4 words, Title Case) that clearly describes the spending type.
-    Every transaction should end up in a meaningful, specific category —
-    "Other" is the ABSOLUTE LAST RESORT, only for truly unclassifiable items.
-  "emoji": a single emoji character that best represents this category
-    (e.g. "🍔" for food, "✈️" for travel, "🏠" for rent). Always provide exactly one emoji.
+    Rules:
+    - Categories describe WHO WAS PAID, not what was bought. A supermarket line is
+      "Supermarkets & grocery stores" whatever was in the basket.
+    - Merchants that sell everything have their own category (Amazon -> "Online
+      marketplaces", Costco and Walmart -> "Big-box, department & warehouse stores").
+    - Use place_types and place_name when available — they are very reliable.
+    - Use merchant_name, ai_description and purchase_mode to inform your choice.
+    - Money coming in, credit-card payments, transfers between the person's own
+      accounts and savings contributions belong to the "Not expenses" group.
+    - When the line shows the group but not the specific type, use that group's
+      "… – Other" category. Use "Unrecognised merchants" only when the line gives
+      no clue at all.
+    - Never invent a category and never answer with a group name alone.
 
 Return ONLY the raw JSON array — no markdown fences, no commentary."""
 
@@ -1073,9 +1035,11 @@ def _categorize_transactions(
         return classifications
 
     # Build the category list string for the prompt
+    custom = load_custom_categories()
     all_cats = _build_known_categories_list()
-    cat_list_str = ", ".join(f'"{c}"' for c in all_cats)
-    prompt = _CATEGORIZE_SYSTEM_TEMPLATE.format(categories=cat_list_str)
+    prompt = _CATEGORIZE_SYSTEM_TEMPLATE.format(
+        categories=_categories_for_prompt(custom)
+    )
 
     # Add user corrections as few-shot examples
     if corrections:
@@ -1133,10 +1097,10 @@ def _categorize_transactions(
                 if isinstance(categorized, dict):
                     cat = categorized.get("category", "")
                     if cat:
-                        classifications[desc]["category"] = cat
-                    emoji = categorized.get("emoji", "")
-                    if emoji:
-                        classifications[desc]["emoji"] = emoji
+                        # Only names from the list are kept, however Gemini spelt them
+                        classifications[desc]["category"] = categories.normalise(
+                            cat, custom
+                        )
             print("done")
         except Exception as exc:
             print(f"ERROR: {exc}")
@@ -1144,6 +1108,45 @@ def _categorize_transactions(
             time.sleep(1)
 
     return classifications
+
+
+def translate_corrections(
+    corrections: dict[str, str], custom: dict[str, str] | None = None
+) -> dict[str, str]:
+    """The person's corrections renamed to the two-level list.
+
+    A correction to a category of the list (or one of the person's own) is kept; one to an
+    old name with a clear new equivalent is renamed; the rest are dropped so that Gemini
+    chooses afresh.
+    """
+    known = set(categories.known_categories(custom))
+    kept: dict[str, str] = {}
+    for description, category in corrections.items():
+        if category in known:
+            kept[description] = category
+        elif categories.LEGACY.get(category):
+            kept[description] = categories.LEGACY[category]
+    return kept
+
+
+def recategorize_all(model: str = GEMINI_MODEL, progress_cb: callable = None) -> int:
+    """Move this Mac's data to the two-level list: translate the corrections, then have
+    Gemini categorise every description again. Returns how many descriptions were redone.
+    """
+    corrections = load_corrections()
+    translated = translate_corrections(corrections, load_custom_categories())
+    if translated != corrections:
+        CORRECTIONS_FILE.write_text(
+            json.dumps(translated, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(
+            f"Corrections: {len(translated)} kept or renamed, "
+            f"{len(corrections) - len(translated)} left for Gemini to decide."
+        )
+    cached, _ = _load_cached_enrichment()
+    descriptions = [d for d in cached if d not in translated]
+    recategorize_descriptions(descriptions, model=model, progress_cb=progress_cb)
+    return len(descriptions)
 
 
 def recategorize_descriptions(
@@ -1572,7 +1575,16 @@ def main() -> None:
         default=STATEMENTS_DIR,
         help="Root folder containing statement CSVs",
     )
+    parser.add_argument(
+        "--recategorize-all",
+        action="store_true",
+        help="Categorise every transaction again with the two-level list, then stop",
+    )
     args = parser.parse_args()
+    if args.recategorize_all:
+        count = recategorize_all(model=args.model)
+        print(f"Done: {count} descriptions categorised again.")
+        return
     enrich(statements_dir=args.statements_dir, city=args.city, model=args.model)
 
 

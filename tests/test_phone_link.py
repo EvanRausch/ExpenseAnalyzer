@@ -53,6 +53,7 @@ def mac(tmp_path, monkeypatch):
         lambda desc, note: files["notes"].update({desc: note}),
     )
     monkeypatch.setattr(ledger, "_get_known_categories", lambda: ["Groceries", "Rent"])
+    monkeypatch.setattr(ledger.FileStore, "custom_categories", lambda self: {})
     monkeypatch.setattr(
         ledger,
         "_load_summary_descs",
@@ -124,7 +125,24 @@ def test_export_holds_what_the_mac_app_shows(mac):
     assert card_purchase["category"] == "Other"
     assert [t["bankDescription"] for t in export["trash"]] == ["TRASHED"]
     assert export["categories"] == ["Bill Payment", "Groceries", "Other", "Rent"]
-    assert set(export["emojis"]) == set(export["categories"])
+    # Every category sits in a group of the two-level list; old names go under "Other"
+    placed = {
+        group["name"]: sorted(set(group["categories"]) & set(export["categories"]))
+        for group in export["groups"]
+        if set(group["categories"]) & set(export["categories"])
+    }
+    assert placed == {
+        "Housing & home": ["Rent"],
+        "Other": ["Bill Payment", "Groceries", "Other"],
+    }
+    assert [g["name"] for g in export["groups"]][:2] == [
+        "Housing & home",
+        "Utilities & telecom",
+    ]
+    assert all(g["emoji"] for g in export["groups"])
+    assert set(export["emojis"]) == set(export["categories"]) | {
+        g["name"] for g in export["groups"]
+    }
     assert export["categoryDescriptions"] == {"Groceries": "Food shops"}
     assert export["officialIncomeSources"] == ["Employer"]
     assert export["aiAnalysis"] == "## Trend"

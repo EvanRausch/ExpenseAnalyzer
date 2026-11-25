@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from server.db import ROW_FIELDS, Transaction, read_document, write_document
-from src import ledger
+from src import categories, ledger
 
 
 class Book:
@@ -81,7 +81,30 @@ class Book:
         self.set_document("notes", notes)
 
     def known_categories(self) -> list[str]:
-        return self.document("custom_categories", None) or list(ledger.KNOWN_CATEGORIES)
+        return categories.known_categories(self.custom_categories())
+
+    def custom_categories(self) -> dict[str, str]:
+        """The person's own categories, name -> group (an old list means group "Other")."""
+        saved = self.document("custom_categories", {})
+        if isinstance(saved, list):
+            return {
+                str(n): categories.OTHER_GROUP
+                for n in saved
+                if n not in categories.LEGACY
+            }
+        return (
+            {str(k): str(v) for k, v in saved.items()}
+            if isinstance(saved, dict)
+            else {}
+        )
+
+    def save_custom_category(self, name: str, group: str) -> None:
+        self.set_document(
+            "custom_categories", {**self.custom_categories(), name: group}
+        )
+
+    def group_of(self, category: str) -> str:
+        return categories.group_of(category, self.custom_categories())
 
     def emoji(self, category: str) -> str:
         if category in ledger.BUILT_IN_EMOJI:
