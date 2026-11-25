@@ -4,6 +4,20 @@ import SwiftUI
 ///
 /// Squarified layout (Bruls, Huizing & van Wijk), which keeps the rectangles close to
 /// squares so that labels fit and small items stay visible.
+extension CGRect {
+    /// Like insetBy, but never the null rectangle (infinite origin): a rectangle too small
+    /// to shrink becomes a point at its centre instead.
+    func shrunk(by dx: CGFloat, _ dy: CGFloat) -> CGRect {
+        CGRect(
+            x: minX + min(dx, width / 2), y: minY + min(dy, height / 2),
+            width: max(0, width - 2 * dx), height: max(0, height - 2 * dy))
+    }
+
+    var isFinite: Bool {
+        origin.x.isFinite && origin.y.isFinite && width.isFinite && height.isFinite
+    }
+}
+
 enum Treemap {
     struct Cell: Identifiable {
         let id: String
@@ -53,7 +67,7 @@ enum Treemap {
         _ row: [(String, Double)], in remaining: inout CGRect, into placed: inout [String: CGRect]
     ) {
         let sum = row.reduce(0) { $0 + $1.1 }
-        guard sum > 0 else { return }
+        guard sum > 0, remaining.width > 0, remaining.height > 0 else { return }
         if remaining.width >= remaining.height {
             // A column down the left edge
             let width = sum / remaining.height
@@ -95,7 +109,7 @@ enum Treemap {
                 Cell(
                     id: group.name, group: group.name, name: group.name, total: group.total,
                     count: group.count, rect: frame))
-            let padded = frame.insetBy(dx: gap, dy: gap)
+            let padded = frame.shrunk(by: gap, gap)
             // The group's name sits in a strip at the top; categories fill the rest
             let inner = CGRect(
                 x: padded.minX, y: padded.minY + header, width: padded.width,
@@ -108,7 +122,7 @@ enum Treemap {
                     Cell(
                         id: "\(group.name)/\(name)", group: group.name, name: name,
                         total: member?.total ?? 0, count: member?.count ?? 0,
-                        rect: cellRect.insetBy(dx: gap / 2, dy: gap / 2)))
+                        rect: cellRect.shrunk(by: gap / 2, gap / 2)))
             }
         }
         return (groupCells, categoryCells)

@@ -501,3 +501,25 @@ struct ChartLayoutTests {
         #expect(abs(zoomed.bubbles[0].r - laid.bubbles[0].r * 2) < 0.01)
     }
 }
+
+struct ChartGeometryTests {
+    @Test func slivers_and_zero_sizes_never_produce_non_finite_geometry() {
+        // A category worth almost nothing next to a big one, in a small rectangle
+        let groups = [GroupTotal(name: "G", total: 1000.001, count: 2)]
+        let members = ["G": [GroupTotal(name: "big", total: 1000, count: 1), GroupTotal(name: "sliver", total: 0.001, count: 1)]]
+        for size in [CGSize(width: 40, height: 30), CGSize(width: 0, height: 0), CGSize(width: 1, height: 300)] {
+            let rect = CGRect(origin: .zero, size: size)
+            let cells = Treemap.cells(groups: groups, categories: { members[$0] ?? [] }, in: rect, header: 18)
+            for cell in cells.groups + cells.categories {
+                #expect(cell.rect.isFinite, "\(cell.name) in \(size)")
+            }
+            let unit = Bubbles.unitLayout(groups: groups) { members[$0] ?? [] }
+            let laid = Bubbles.fit(unit, in: rect.shrunk(by: 4, 4))
+            for bubble in laid.clusters + laid.bubbles {
+                #expect(bubble.x.isFinite && bubble.y.isFinite && bubble.r.isFinite)
+            }
+        }
+        #expect(CGRect(x: 10, y: 10, width: 2, height: 2).shrunk(by: 3, 3) == CGRect(x: 11, y: 11, width: 0, height: 0))
+        #expect(CGRect(x: 10, y: 10, width: 2, height: 2).insetBy(dx: 3, dy: 3).isFinite == false)
+    }
+}

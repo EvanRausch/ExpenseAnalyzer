@@ -121,7 +121,7 @@ enum Bubbles {
     /// The unit layout scaled and moved to fill `rect`.
     static func fit(_ unit: Unit, in rect: CGRect) -> (clusters: [Bubble], bubbles: [Bubble]) {
         let (minX, minY, maxX, maxY) = unit.bounds
-        guard maxX > minX, maxY > minY else { return ([], []) }
+        guard maxX > minX, maxY > minY, rect.width > 0, rect.height > 0 else { return ([], []) }
         let scale = min(rect.width / (maxX - minX), rect.height / (maxY - minY))
         func place(_ b: Bubble) -> Bubble {
             var out = b
@@ -152,7 +152,7 @@ struct BubbleChartView: View {
 
     var body: some View {
         ZoomableChart(height: height, onTap: open) { size, visible in
-            chart(in: CGRect(origin: .zero, size: size).insetBy(dx: 4, dy: 4), visible: visible)
+            chart(in: CGRect(origin: .zero, size: size).shrunk(by: 4, 4), visible: visible)
         }
         .onChange(of: signature, initial: true) { _, _ in
             unit = Bubbles.unitLayout(
@@ -166,7 +166,7 @@ struct BubbleChartView: View {
 
     /// A one-finger tap: the smallest bubble under it opens its merchants, a cluster its categories.
     private func open(at point: CGPoint, size: CGSize) {
-        let laid = Bubbles.fit(unit, in: CGRect(origin: .zero, size: size).insetBy(dx: 4, dy: 4))
+        let laid = Bubbles.fit(unit, in: CGRect(origin: .zero, size: size).shrunk(by: 4, 4))
         func holds(_ b: Bubbles.Bubble) -> Bool { hypot(b.x - point.x, b.y - point.y) <= b.r }
         if let bubble = laid.bubbles.filter(holds).min(by: { $0.r < $1.r }) {
             navigate(.merchants(bubble.name))

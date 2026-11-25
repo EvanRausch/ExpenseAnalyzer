@@ -27,7 +27,8 @@ struct ZoomableChart<Content: View>: View {
             let shown = clamp(offset, content: size, in: viewport)
             let visible = CGRect(
                 x: -shown.width, y: -shown.height, width: viewport.width, height: viewport.height)
-            content(size, visible)
+            if viewport.width > 0 && viewport.height > 0 {
+                content(size, visible)
                 .frame(width: size.width, height: size.height, alignment: .topLeading)
                 .contentShape(Rectangle())
                 // On the content itself, so the location is in its coordinates. A tap needs
@@ -58,6 +59,7 @@ struct ZoomableChart<Content: View>: View {
                         .accessibilityLabel("Reset zoom")
                     }
                 }
+            }
         }
         .frame(height: height)
         .padding(.vertical, 4)
