@@ -36,40 +36,6 @@ enum Palette {
     }
 }
 
-/// Donut of the largest groups, with everything past the palette folded into "Other".
-struct ShareChart: View {
-    /// Largest first.
-    let groups: [GroupTotal]
-
-    var body: some View {
-        let slices = Self.slices(groups)
-        Chart(Array(slices.enumerated()), id: \.element.id) { index, slice in
-            SectorMark(
-                angle: .value("Total", slice.total), innerRadius: .ratio(0.62), angularInset: 1
-            )
-            .foregroundStyle(Palette.color(index))
-        }
-        .chartLegend(.hidden)
-        .overlay {
-            VStack(spacing: 2) {
-                Text("Total").font(.caption).foregroundStyle(.secondary)
-                Text(groups.reduce(0) { $0 + $1.total }.money).font(.headline).monospacedDigit()
-            }
-        }
-        .frame(height: 210)
-        .padding(.vertical, 8)
-    }
-
-    static func slices(_ groups: [GroupTotal]) -> [GroupTotal] {
-        let top = Array(groups.prefix(Palette.colors.count))
-        let rest = groups.dropFirst(Palette.colors.count)
-        guard !rest.isEmpty else { return top }
-        return top + [
-            GroupTotal(name: "Other", total: rest.reduce(0) { $0 + $1.total }, count: rest.count)
-        ]
-    }
-}
-
 /// One line of a breakdown: name, optional explanation, total and share.
 struct GroupRow: View {
     let title: String
@@ -77,16 +43,23 @@ struct GroupRow: View {
     let group: GroupTotal
     let grandTotal: Double
     var color: Color?
+    /// Draw the share as a bar under the name, so rows can be compared at a glance
+    var showsBar = false
 
     var body: some View {
         HStack(spacing: 10) {
-            if let color {
+            if let color, !showsBar {
                 Circle().fill(color).frame(width: 10, height: 10)
             }
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                 if !subtitle.isEmpty {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                if showsBar {
+                    ShareBar(
+                        fraction: grandTotal > 0 ? group.total / grandTotal : 0,
+                        color: color ?? .accentColor)
                 }
             }
             Spacer()
@@ -99,6 +72,24 @@ struct GroupRow: View {
                 .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// A thin bar showing a share of the total.
+struct ShareBar: View {
+    let fraction: Double
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                Capsule().fill(color)
+                    .frame(width: max(3, geometry.size.width * min(max(fraction, 0), 1)))
+            }
+        }
+        .frame(height: 6)
+        .padding(.trailing, 12)
     }
 }
 

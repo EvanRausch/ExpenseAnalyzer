@@ -5,8 +5,11 @@ import SwiftUI
 struct SummaryTab: View {
     @Environment(DataStore.self) private var store
     @State private var filter = TransactionFilter()
+    @State private var path: [Route] = []
     /// Categories left out of the summary, one per line.
     @AppStorage("hiddenCategories") private var hiddenText = ""
+    /// Which picture of the spending sits above the list
+    @AppStorage("summaryChart") private var chart = "map"
 
     var body: some View {
         let hidden = Set(hiddenText.split(separator: "\n").map(String.init))
@@ -15,7 +18,7 @@ struct SummaryTab: View {
         // Level 1 of the two-level list; tapping one shows its categories
         let groups = shown.grouped { store.group(of: $0.category) }
         let total = shown.total
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 Section {
                     FilterBar(filter: $filter, transactions: store.spending)
@@ -24,7 +27,17 @@ struct SummaryTab: View {
                     ContentUnavailableView("No spending", systemImage: "chart.pie")
                 } else {
                     Section {
-                        ShareChart(groups: groups)
+                        Picker("Chart", selection: $chart) {
+                            Text("Map").tag("map")
+                            Text("Bubbles").tag("bubbles")
+                        }
+                        .pickerStyle(.segmented)
+                        .listRowSeparator(.hidden)
+                        if chart == "bubbles" {
+                            BubbleChartView(groups: groups, transactions: shown)
+                        } else {
+                            TreemapView(groups: groups, transactions: shown)
+                        }
                     }
                     Section {
                         ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
@@ -33,7 +46,8 @@ struct SummaryTab: View {
                                     title: "\(store.emoji(for: group.name)) \(group.name)",
                                     group: group,
                                     grandTotal: total,
-                                    color: Palette.color(index))
+                                    color: Palette.color(index),
+                                    showsBar: true)
                             }
                             .swipeActions {
                                 Button("Hide", systemImage: "eye.slash") {
@@ -86,6 +100,7 @@ struct SummaryTab: View {
             .refreshable { await store.refresh() }
             .drillDown(into: shown)
         }
+        .environment(\.navigate, NavigateAction { path.append($0) })
     }
 
     private func setHidden(_ categories: Set<String>) {
@@ -96,11 +111,12 @@ struct SummaryTab: View {
 struct TransactionsTab: View {
     @Environment(DataStore.self) private var store
     @State private var filter = TransactionFilter()
+    @State private var path: [Route] = []
 
     var body: some View {
         let filtered = filter.apply(store.spending)
         let total = filtered.total
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 Section {
                     FilterBar(filter: $filter, transactions: store.spending)
@@ -141,6 +157,7 @@ struct TransactionsTab: View {
             .refreshable { await store.refresh() }
             .drillDown(into: filtered)
         }
+        .environment(\.navigate, NavigateAction { path.append($0) })
     }
 }
 

@@ -12,6 +12,16 @@ enum Route: Hashable {
     case detail(String)
 }
 
+/// Pushes a screen from views that cannot be NavigationLinks (the treemap's tiles).
+struct NavigateAction {
+    var go: (Route) -> Void = { _ in }
+    func callAsFunction(_ route: Route) { go(route) }
+}
+
+extension EnvironmentValues {
+    @Entry var navigate = NavigateAction()
+}
+
 extension View {
     /// Where a tab's rows lead, given the transactions the tab is currently showing.
     func drillDown(into transactions: [Transaction]) -> some View {
@@ -60,7 +70,9 @@ struct CategoriesScreen: View {
         let total = mine.total
         List {
             Section {
-                ShareChart(groups: categories)
+                TreemapView(
+                    groups: [GroupTotal(name: group, total: total, count: mine.count)],
+                    transactions: mine, height: 200)
             }
             Section("Categories") {
                 NavigationLink(value: Route.transactions(scope)) {
@@ -69,14 +81,15 @@ struct CategoriesScreen: View {
                         group: GroupTotal(name: "All", total: total, count: mine.count),
                         grandTotal: total)
                 }
-                ForEach(Array(categories.enumerated()), id: \.element.id) { index, category in
+                ForEach(categories) { category in
                     NavigationLink(value: Route.merchants(category.name)) {
                         GroupRow(
                             title: "\(store.emoji(for: category.name)) \(category.name)",
                             subtitle: store.data.categoryDescriptions[category.name] ?? "",
                             group: category,
                             grandTotal: total,
-                            color: Palette.color(index))
+                            color: Palette.color(0),
+                            showsBar: true)
                     }
                 }
             }

@@ -42,7 +42,10 @@ final class ExpenseAnalyzerUITests: XCTestCase {
 
         row("Transportation").swipeLeft()
         app.buttons["Hide"].tap()
-        XCTAssertFalse(row("Transportation", timeout: 2).exists)
+        XCTAssertFalse(
+            app.collectionViews.buttons.matching(
+                NSPredicate(format: "label CONTAINS 'Transportation' AND identifier != 'chart'")
+            ).firstMatch.exists)
         snap("summary-hidden")
         app.navigationBars.buttons["Shown Categories"].tap()
         app.buttons["Fuel & gas stations"].tap()
@@ -141,12 +144,18 @@ final class ExpenseAnalyzerUITests: XCTestCase {
             ["setCategory", "setNote", "trash", "markOfficial", "restore"])
     }
 
-    /// A list row showing `text`.
+    /// A list row showing `text` (not a tile or bubble of the charts, which are buttons too),
+    /// scrolling down a little at a time to bring it on screen.
     private func row(_ text: String, timeout: TimeInterval = 5) -> XCUIElement {
         let row = app.collectionViews.buttons.matching(
-            NSPredicate(format: "label CONTAINS %@", text)
+            NSPredicate(format: "label CONTAINS %@ AND identifier != 'chart'", text)
         ).firstMatch
-        _ = row.waitForExistence(timeout: timeout)
+        var scrolls = 0
+        while !row.waitForExistence(timeout: scrolls == 0 ? timeout : 1) && scrolls < 4 {
+            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+            from.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)))
+            scrolls += 1
+        }
         return row
     }
 
