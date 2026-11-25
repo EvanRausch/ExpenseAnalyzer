@@ -9,8 +9,9 @@ import XCTest
 
 /// Walks through every tab against a folder of made-up data, with no server (see FixtureTransport).
 ///
-/// Needs `TEST_RUNNER_DATA_FOLDER` (a folder holding a `transactions.json`) in the environment of
-/// `xcodebuild test`; `TEST_RUNNER_SCREENSHOT_DIR` additionally saves a picture of each screen.
+/// Needs `TEST_RUNNER_DATA_FOLDER` (a folder written by `python ios/make_demo_data.py <folder>`) in
+/// the environment of `xcodebuild test`; `TEST_RUNNER_SCREENSHOT_DIR` additionally saves a picture
+/// of each screen.
 final class ExpenseAnalyzerUITests: XCTestCase {
     private var app: XCUIApplication!
     private var dataFolder = ""
@@ -28,7 +29,7 @@ final class ExpenseAnalyzerUITests: XCTestCase {
 
     @MainActor
     func testBrowsingAndEditing() throws {
-        // Summary: filters, hiding a category, drilling down
+        // Summary: filters, hiding a group, drilling down group -> category -> merchant
         XCTAssert(app.navigationBars["Summary"].waitForExistence(timeout: 20))
         snap("summary")
         app.buttons["All dates"].tap()
@@ -39,15 +40,18 @@ final class ExpenseAnalyzerUITests: XCTestCase {
         app.buttons["Credit"].tap()
         snap("summary-filtered")
 
-        row("Transport").swipeLeft()
+        row("Transportation").swipeLeft()
         app.buttons["Hide"].tap()
-        XCTAssertFalse(row("Transport", timeout: 2).exists)
+        XCTAssertFalse(row("Transportation", timeout: 2).exists)
         snap("summary-hidden")
         app.navigationBars.buttons["Shown Categories"].tap()
-        app.buttons["Transport"].tap()
-        XCTAssert(row("Transport").exists)
+        app.buttons["Fuel & gas stations"].tap()
+        XCTAssert(row("Transportation").exists)
 
-        row("Groceries").tap()
+        row("Food & drink").tap()
+        XCTAssert(row("Supermarkets & grocery stores").exists)
+        snap("categories")
+        row("Supermarkets & grocery stores").tap()
         XCTAssert(row("Maple Market").exists)
         snap("merchants")
         row("Maple Market").tap()
@@ -64,8 +68,12 @@ final class ExpenseAnalyzerUITests: XCTestCase {
         app.collectionViews.buttons.element(boundBy: 0).tap()
         XCTAssert(app.navigationBars["Transaction"].waitForExistence(timeout: 5))
         snap("detail")
+        // The group first, then one of its categories
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Group'")).firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "label ENDSWITH 'Gifts & donations'")).firstMatch
+            .tap()
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Category'")).firstMatch.tap()
-        app.buttons.matching(NSPredicate(format: "label ENDSWITH 'Gifts'")).firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "label ENDSWITH 'gift cards'")).firstMatch.tap()
         let note = app.descendants(matching: .any)
             .matching(NSPredicate(format: "placeholderValue == 'Add a note'")).firstMatch
         note.tap()
@@ -76,7 +84,7 @@ final class ExpenseAnalyzerUITests: XCTestCase {
         app.buttons["Move to Trash"].tap()
         XCTAssert(app.staticTexts["No transactions"].waitForExistence(timeout: 5))
 
-        // Transactions: flat list, sorting and search
+        // Transactions: categories under their groups, sorting and search
         app.tabBars.buttons["Transactions"].tap()
         snap("transactions-tab")
         row("All transactions").tap()
@@ -89,7 +97,9 @@ final class ExpenseAnalyzerUITests: XCTestCase {
         XCTAssert(row("Luna Pizzeria").exists)
         XCTAssertFalse(row("Maple Market", timeout: 1).exists)
         snap("search")
-        app.buttons["Cancel"].tap()
+        // "Cancel" up to iOS 26, a close button from iOS 27
+        app.buttons.matching(NSPredicate(format: "label IN {'Cancel', 'Close', 'Dismiss'}"))
+            .firstMatch.tap()
 
         app.tabBars.buttons["Statistics"].tap()
         XCTAssert(app.staticTexts["Total expenses"].waitForExistence(timeout: 5))

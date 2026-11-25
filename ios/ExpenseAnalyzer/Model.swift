@@ -27,6 +27,18 @@ struct Transaction: Identifiable, Hashable, Codable {
     }
 }
 
+/// A broad group of categories (level 1 of the two-level list), with its categories.
+struct CategoryGroup: Codable, Hashable, Identifiable {
+    var name: String
+    var emoji: String
+    var categories: [String]
+
+    var id: String { name }
+
+    /// Where categories that are in no group are shown.
+    static let other = "Other"
+}
+
 /// Everything the server answers to `GET /v1/export` (the Mac app writes the same to `transactions.json`).
 struct ExportFile: Codable {
     var exportedAt = Date.distantPast
@@ -34,6 +46,8 @@ struct ExportFile: Codable {
     var transactions: [Transaction] = []
     var trash: [Transaction] = []
     var categories: [String] = []
+    /// Every group in display order, each with its categories (the person's own included)
+    var groups: [CategoryGroup] = []
     var emojis: [String: String] = [:]
     var categoryDescriptions: [String: String] = [:]
     var merchantDescriptions: [String: [String: String]] = [:]
@@ -77,13 +91,15 @@ struct ExportFile: Codable {
 /// A change made on the phone, sent to the server as soon as it can be reached.
 struct Edit: Codable, Hashable {
     enum Kind: String, Codable {
-        case setCategory, setNote, trash, restore, markOfficial, unmarkOfficial
+        case setCategory, setNote, trash, restore, markOfficial, unmarkOfficial, createCategory
     }
 
     var id = UUID().uuidString
     let type: Kind
     var keys: [String] = []
     var value = ""
+    /// The group of a category being created
+    var group: String?
 }
 
 /// What the phone sends to `POST /v1/edits`, and keeps on disk until the server has taken it.
@@ -94,6 +110,23 @@ struct EditFile: Codable {
 }
 
 extension ExportFile {
+    /// The group of a category; "Other" for one in no group.
+    func group(of category: String) -> String {
+        groups.first { $0.categories.contains(category) }?.name ?? CategoryGroup.other
+    }
+
+    /// List a new category under a group (the group "Other" if that one is unknown).
+    mutating func add(category: String, to group: String) {
+        guard !categories.contains(category) else { return }
+        categories = (categories + [category]).sorted()
+        let target = groups.contains { $0.name == group } ? group : CategoryGroup.other
+        if let index = groups.firstIndex(where: { $0.name == target }) {
+            groups[index].categories.append(category)
+        } else {
+            groups.append(CategoryGroup(name: target, emoji: "🏷️", categories: [category]))
+        }
+    }
+
     /// The data as it will look once the server has applied `edits`.
     func applying(_ edits: [Edit]) -> ExportFile {
         var file = self
@@ -137,6 +170,8 @@ extension ExportFile {
                 }
             case .unmarkOfficial:
                 file.officialIncomeSources.removeAll { $0 == edit.value }
+            case .createCategory:
+                file.add(category: edit.value, to: edit.group ?? CategoryGroup.other)
             }
         }
         return file

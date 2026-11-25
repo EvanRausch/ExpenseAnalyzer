@@ -223,6 +223,11 @@ final class DataStore {
         add(Edit(type: official ? .markOfficial : .unmarkOfficial, value: source))
     }
 
+    /// Add a category of the person's own under a group.
+    func createCategory(_ name: String, in group: String) {
+        add(Edit(type: .createCategory, value: name, group: group))
+    }
+
     private func add(_ edit: Edit) {
         pendingEdits.append(edit)
         rebuild()
@@ -242,6 +247,11 @@ final class DataStore {
 
     func emoji(for category: String) -> String {
         data.emojis[category] ?? "🏷️"
+    }
+
+    /// The group (level 1) a category belongs to.
+    func group(of category: String) -> String {
+        data.group(of: category)
     }
 
     func isOfficial(_ source: String) -> Bool {

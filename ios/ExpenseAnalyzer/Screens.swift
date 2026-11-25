@@ -2,6 +2,8 @@ import SwiftUI
 
 /// The screens a row can lead to inside a tab.
 enum Route: Hashable {
+    /// The categories of a group (level 1 of the two-level list).
+    case categories(String)
     /// The merchants of a category.
     case merchants(String)
     case transactions(Scope)
@@ -15,6 +17,8 @@ extension View {
     func drillDown(into transactions: [Transaction]) -> some View {
         navigationDestination(for: Route.self) { route in
             switch route {
+            case .categories(let group):
+                CategoriesScreen(group: group, transactions: transactions)
             case .merchants(let category):
                 MerchantsScreen(
                     category: category,
@@ -40,6 +44,51 @@ struct StatsLink: View {
         NavigationLink(value: Route.stats(scope)) {
             Label("Statistics", systemImage: "chart.bar.xaxis")
         }
+    }
+}
+
+/// The categories of one group, largest first.
+struct CategoriesScreen: View {
+    @Environment(DataStore.self) private var store
+    let group: String
+    /// The transactions the tab is showing; only this group's are used.
+    let transactions: [Transaction]
+
+    var body: some View {
+        let mine = transactions.filter { store.group(of: $0.category) == group }
+        let categories = mine.grouped(by: \.category)
+        let total = mine.total
+        List {
+            Section {
+                ShareChart(groups: categories)
+            }
+            Section("Categories") {
+                NavigationLink(value: Route.transactions(scope)) {
+                    GroupRow(
+                        title: "All",
+                        group: GroupTotal(name: "All", total: total, count: mine.count),
+                        grandTotal: total)
+                }
+                ForEach(Array(categories.enumerated()), id: \.element.id) { index, category in
+                    NavigationLink(value: Route.merchants(category.name)) {
+                        GroupRow(
+                            title: "\(store.emoji(for: category.name)) \(category.name)",
+                            subtitle: store.data.categoryDescriptions[category.name] ?? "",
+                            group: category,
+                            grandTotal: total,
+                            color: Palette.color(index))
+                    }
+                }
+            }
+        }
+        .navigationTitle("\(store.emoji(for: group)) \(group)")
+        .toolbar { StatsLink(scope: scope) }
+    }
+
+    private var scope: Scope {
+        Scope(
+            group: group,
+            members: store.data.groups.first { $0.name == group }?.categories ?? [])
     }
 }
 
@@ -167,7 +216,8 @@ struct TransactionDetailScreen: View {
     @State private var note = ""
     @FocusState private var editingNote: Bool
     @State private var addingCategory = false
-    @State private var newCategory = ""
+    /// The group whose categories the picker lists; nil until the person changes it
+    @State private var pickedGroup: String?
 
     var body: some View {
         if let transaction = store.transaction(id: id) {
@@ -203,8 +253,14 @@ struct TransactionDetailScreen: View {
                 }
             } else {
                 Section {
+                    let group = pickedGroup ?? store.group(of: transaction.category)
+                    Picker("Group", selection: Binding(get: { group }, set: { pickedGroup = $0 })) {
+                        ForEach(store.data.groups) { group in
+                            Text("\(group.emoji) \(group.name)").tag(group.name)
+                        }
+                    }
                     Picker("Category", selection: category(of: transaction)) {
-                        ForEach(categories(including: transaction.category), id: \.self) {
+                        ForEach(categories(in: group, including: transaction.category), id: \.self) {
                             category in
                             Text(label(category)).tag(category)
                         }
@@ -265,13 +321,12 @@ struct TransactionDetailScreen: View {
         .navigationTitle("Transaction")
         .scrollDismissesKeyboard(.immediately)
         .onAppear { note = transaction.notes }
-        .alert("New Category", isPresented: $addingCategory) {
-            TextField("Name", text: $newCategory)
-            Button("Cancel", role: .cancel) { newCategory = "" }
-            Button("Add") {
-                let name = newCategory.trimmingCharacters(in: .whitespaces)
-                if !name.isEmpty { store.setCategory(name, for: transaction) }
-                newCategory = ""
+        .sheet(isPresented: $addingCategory) {
+            NewCategorySheet(group: pickedGroup ?? store.group(of: transaction.category)) {
+                name, group in
+                store.createCategory(name, in: group)
+                store.setCategory(name, for: transaction)
+                pickedGroup = group
             }
         }
     }
@@ -284,9 +339,10 @@ struct TransactionDetailScreen: View {
         "\(store.emoji(for: category)) \(category)"
     }
 
-    private func categories(including current: String) -> [String] {
-        let all = store.data.categories
-        return all.contains(current) ? all : [current] + all
+    /// The categories of a group; the transaction's own first when it is in another group.
+    private func categories(in group: String, including current: String) -> [String] {
+        let members = store.data.groups.first { $0.name == group }?.categories ?? []
+        return members.contains(current) ? members : [current] + members
     }
 
     private func category(of transaction: Transaction) -> Binding<String> {
@@ -303,5 +359,43 @@ struct TransactionDetailScreen: View {
     private func websiteURL(_ website: String) -> URL? {
         guard !website.isEmpty else { return nil }
         return URL(string: website.contains("://") ? website : "https://\(website)")
+    }
+}
+
+/// Asks for the name and group of a category of the person's own.
+struct NewCategorySheet: View {
+    @Environment(DataStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State var group: String
+    @State private var name = ""
+    let add: (String, String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Name", text: $name)
+                    .accessibilityIdentifier("newCategoryName")
+                Picker("Group", selection: $group) {
+                    ForEach(store.data.groups) { group in
+                        Text("\(group.emoji) \(group.name)").tag(group.name)
+                    }
+                }
+            }
+            .navigationTitle("New Category")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        add(name.trimmingCharacters(in: .whitespaces), group)
+                        dismiss()
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }

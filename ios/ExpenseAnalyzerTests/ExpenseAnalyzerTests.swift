@@ -45,7 +45,10 @@ struct ExportTests {
           {"key": "pay", "date": "2026-03-05", "merchant": "Acme", "summary": "", "bankDescription": "PAIE ACME",
            "amount": -2000, "category": "Income", "account": "debit", "isIncome": true, "mode": "transfer",
            "place": "", "phone": "", "website": "", "notes": ""}],
-         "trash": [], "categories": ["Groceries", "Income"], "emojis": {"Groceries": "🛒"},
+         "trash": [], "categories": ["Groceries", "Income"],
+         "groups": [{"name": "Food & drink", "emoji": "🍽️", "categories": ["Groceries", "Restaurants"]},
+                    {"name": "Not expenses", "emoji": "💰", "categories": ["Income"]}],
+         "emojis": {"Groceries": "🛒", "Food & drink": "🍽️"},
          "categoryDescriptions": {"Groceries": "Food shops"}, "merchantDescriptions": {"Groceries": {"Metro": "Main shop"}},
          "officialIncomeSources": ["Acme"], "aiAnalysis": "## Trend"}
         """
@@ -61,6 +64,9 @@ struct ExportTests {
         #expect(file.exportedAt == ISO8601DateFormatter().date(from: "2026-11-21T20:22:56Z"))
         #expect(file.merchantDescriptions["Groceries"]?["Metro"] == "Main shop")
         #expect(file.appliedEdits == ["done"])
+        #expect(file.groups.map(\.name) == ["Food & drink", "Not expenses"])
+        #expect(file.group(of: "Groceries") == "Food & drink")
+        #expect(file.group(of: "Mystery") == "Other")
     }
 
     @Test func identicalRowsGetDifferentIds() throws {
@@ -82,7 +88,10 @@ struct PendingEditTests {
             tx("n2", merchant: "Cafe", bankDescription: "CAFE"),
         ],
         trash: [tx("gone")],
-        categories: ["Groceries", "Restaurants"])
+        categories: ["Groceries", "Restaurants"],
+        groups: [
+            CategoryGroup(name: "Food & drink", emoji: "🍽️", categories: ["Groceries", "Restaurants"])
+        ])
 
     private func category(_ key: String, in file: ExportFile) -> String? {
         file.transactions.first { $0.key == key }?.category
@@ -95,6 +104,20 @@ struct PendingEditTests {
         #expect(category("m2", in: result) == "Snacks")
         #expect(category("m3", in: result) == "Restaurants")
         #expect(result.categories == ["Groceries", "Restaurants", "Snacks"])
+    }
+
+    @Test func aNewCategoryJoinsItsGroupAndUnknownGroupsMeanOther() {
+        let result = file.applying([
+            Edit(type: .createCategory, value: "Snacks", group: "Food & drink"),
+            Edit(type: .createCategory, value: "Odd", group: "No such group"),
+            Edit(type: .setCategory, keys: ["m1"], value: "Snacks"),
+        ])
+
+        #expect(result.group(of: "Snacks") == "Food & drink")
+        #expect(result.groups.map(\.name) == ["Food & drink", "Other"])
+        #expect(result.group(of: "Odd") == "Other")
+        #expect(result.categories == ["Groceries", "Odd", "Restaurants", "Snacks"])
+        #expect(category("m1", in: result) == "Snacks")
     }
 
     @Test func aCategoryChangeOnATransferStaysOnThatTransfer() {
@@ -345,6 +368,20 @@ struct DataStoreTests {
         #expect(server.received[0].keys == ["a"])
         #expect(server.file.transactions[0].category == "Snacks")
         #expect(store.spending.allSatisfy { $0.category == "Snacks" })
+    }
+
+    @Test func aNewCategoryIsSentWithItsGroup() async {
+        let store = store()
+        await store.reload()
+
+        store.createCategory("Snacks", in: "Food & drink")
+        store.setCategory("Snacks", for: store.spending[0])
+        await store.sendPendingEdits()
+
+        #expect(store.group(of: "Snacks") == "Food & drink")
+        #expect(server.received.map(\.type) == [.createCategory, .setCategory])
+        #expect(server.received[0].group == "Food & drink")
+        #expect(server.file.group(of: "Snacks") == "Food & drink")
     }
 
     @Test func changesMadeOfflineAreKeptAndSentLater() async throws {

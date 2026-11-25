@@ -52,18 +52,24 @@ struct TransactionFilter: Equatable {
 
 /// Which transactions a pushed screen shows, out of the ones its tab has filtered.
 struct Scope: Hashable {
+    /// A group (level 1) and the categories it holds
+    var group: String?
+    var members: [String] = []
     var category: String?
     var merchant: String?
     var isIncome = false
 
     func select(from transactions: [Transaction]) -> [Transaction] {
         transactions.filter {
-            (category == nil || $0.category == category)
+            (group == nil || members.contains($0.category))
+                && (category == nil || $0.category == category)
                 && (merchant == nil || $0.merchant == merchant)
         }
     }
 
-    var title: String { merchant ?? category ?? (isIncome ? "All Income" : "All Transactions") }
+    var title: String {
+        merchant ?? category ?? group ?? (isIncome ? "All Income" : "All Transactions")
+    }
 }
 
 struct GroupTotal: Identifiable, Hashable {

@@ -12,7 +12,8 @@ struct SummaryTab: View {
         let hidden = Set(hiddenText.split(separator: "\n").map(String.init))
         let filtered = filter.apply(store.spending)
         let shown = filtered.filter { !hidden.contains($0.category) }
-        let groups = shown.grouped(by: \.category)
+        // Level 1 of the two-level list; tapping one shows its categories
+        let groups = shown.grouped { store.group(of: $0.category) }
         let total = shown.total
         NavigationStack {
             List {
@@ -27,7 +28,7 @@ struct SummaryTab: View {
                     }
                     Section {
                         ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
-                            NavigationLink(value: Route.merchants(group.name)) {
+                            NavigationLink(value: Route.categories(group.name)) {
                                 GroupRow(
                                     title: "\(store.emoji(for: group.name)) \(group.name)",
                                     group: group,
@@ -36,7 +37,11 @@ struct SummaryTab: View {
                             }
                             .swipeActions {
                                 Button("Hide", systemImage: "eye.slash") {
-                                    setHidden(hidden.union([group.name]))
+                                    // Hiding a group hides the categories it holds right now
+                                    let members = shown.filter {
+                                        store.group(of: $0.category) == group.name
+                                    }
+                                    setHidden(hidden.union(members.map(\.category)))
                                 }
                             }
                         }
@@ -52,19 +57,26 @@ struct SummaryTab: View {
             .navigationTitle("Summary")
             .toolbar {
                 Menu {
-                    ForEach(Set(filtered.map(\.category)).union(hidden).sorted(), id: \.self) {
-                        category in
-                        Toggle(
-                            category,
-                            isOn: Binding(
-                                get: { !hidden.contains(category) },
-                                set: {
-                                    setHidden(
-                                        $0
-                                            ? hidden.subtracting([category])
-                                            : hidden.union([category]))
+                    let present = Set(filtered.map(\.category)).union(hidden)
+                    ForEach(store.data.groups) { group in
+                        let members = group.categories.filter(present.contains)
+                        if !members.isEmpty {
+                            Section("\(group.emoji) \(group.name)") {
+                                ForEach(members, id: \.self) { category in
+                                    Toggle(
+                                        category,
+                                        isOn: Binding(
+                                            get: { !hidden.contains(category) },
+                                            set: {
+                                                setHidden(
+                                                    $0
+                                                        ? hidden.subtracting([category])
+                                                        : hidden.union([category]))
+                                            }
+                                        ))
                                 }
-                            ))
+                            }
+                        }
                     }
                 } label: {
                     Label("Shown Categories", systemImage: hidden.isEmpty ? "eye" : "eye.slash")
@@ -100,13 +112,26 @@ struct TransactionsTab: View {
                             group: GroupTotal(name: "All", total: total, count: filtered.count),
                             grandTotal: total)
                     }
-                    ForEach(filtered.grouped(by: \.category)) { group in
-                        NavigationLink(value: Route.merchants(group.name)) {
-                            GroupRow(
-                                title: "\(store.emoji(for: group.name)) \(group.name)",
-                                subtitle: store.data.categoryDescriptions[group.name] ?? "",
-                                group: group,
-                                grandTotal: total)
+                }
+                ForEach(filtered.grouped { store.group(of: $0.category) }) { group in
+                    let mine = filtered.filter { store.group(of: $0.category) == group.name }
+                    Section {
+                        ForEach(mine.grouped(by: \.category)) { category in
+                            NavigationLink(value: Route.merchants(category.name)) {
+                                GroupRow(
+                                    title: "\(store.emoji(for: category.name)) \(category.name)",
+                                    subtitle: store.data.categoryDescriptions[category.name] ?? "",
+                                    group: category,
+                                    grandTotal: total)
+                            }
+                        }
+                    } header: {
+                        NavigationLink(value: Route.categories(group.name)) {
+                            HStack {
+                                Text("\(store.emoji(for: group.name)) \(group.name)")
+                                Spacer()
+                                Text(group.total.money).monospacedDigit()
+                            }
                         }
                     }
                 }
@@ -230,7 +255,16 @@ struct StatisticsTab: View {
         let months = rows.monthly()
         Section("Category Breakdown") {
             Picker("Category", selection: Binding(get: { chosen }, set: { category = $0 })) {
-                ForEach(categories, id: \.self) { Text("\(store.emoji(for: $0)) \($0)").tag($0) }
+                ForEach(store.data.groups) { group in
+                    let members = group.categories.filter(categories.contains)
+                    if !members.isEmpty {
+                        Section("\(group.emoji) \(group.name)") {
+                            ForEach(members, id: \.self) {
+                                Text("\(store.emoji(for: $0)) \($0)").tag($0)
+                            }
+                        }
+                    }
+                }
             }
             StatRow("Transactions", "\(rows.count)")
             StatRow("Total", rows.total.money)
