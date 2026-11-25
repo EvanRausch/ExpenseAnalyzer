@@ -90,8 +90,9 @@ final class DataStore {
         return true
     }
 
-    func signOut() async {
-        _ = try? await api.post("/v1/auth/logout")
+    /// Forget the token on this phone only: it stays valid, so the same token signs in again
+    /// (people share one phone between accounts).
+    func signOut() {
         forget(saying: nil)
     }
 

@@ -8,7 +8,8 @@
 #   ./deploy/cloud.sh import-mac  copy this Mac's data into the live database (once)
 #
 # Afterwards:
-#   ./deploy/cloud.sh token       print a fresh sign-in token for the iPhone app
+#   ./deploy/cloud.sh token [id]  print a fresh sign-in token (lists the accounts when there are
+#                                 several; give the first characters of the one you mean)
 #   ./deploy/cloud.sh add-user    create an empty account for another person; prints their token
 #   ./deploy/cloud.sh recategorise have Gemini categorise everyone's transactions again (two-level list)
 #   ./deploy/cloud.sh deploy      again, whenever server/ or src/ changed
@@ -276,9 +277,10 @@ else:
     need_login
     open_tunnel
     say "New sign-in token"
-    with_database "$PYTHON" -m server.cli new-token
+    with_database "$PYTHON" -m server.cli new-token ${2:+--account "$2"}
     echo
-    echo "Paste it on the iPhone app's sign-in screen. Earlier tokens keep working."
+    echo "Paste it on the iPhone app's sign-in screen. Earlier tokens keep working, and"
+    echo "signing out of the app does not cancel them."
     ;;
 
   add-user)

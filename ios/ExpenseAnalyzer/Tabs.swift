@@ -460,11 +460,11 @@ struct SyncMenu: View {
         .confirmationDialog(
             "Sign out of this phone?", isPresented: $signingOut, titleVisibility: .visible
         ) {
-            Button("Sign Out", role: .destructive) {
-                Task { await store.signOut() }
-            }
+            Button("Sign Out", role: .destructive) { store.signOut() }
         } message: {
-            Text("Your data stays on the server; signing in again brings it back.")
+            Text(
+                "Your data stays on the server and your token keeps working: paste it again to come back."
+            )
         }
     }
 

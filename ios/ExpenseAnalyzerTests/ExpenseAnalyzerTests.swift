@@ -434,10 +434,14 @@ struct DataStoreTests {
         #expect(store.isSignedIn)
         #expect(store.spending.count == 2)
 
-        await store.signOut()
+        store.signOut()
         #expect(!store.isSignedIn)
         #expect(!store.hasData)
         #expect(store.spending.isEmpty)
+        // The token was only forgotten here, not revoked: it signs in again
+        #expect(server.received.isEmpty)
+        #expect(await store.signIn(token: "right", server: Server.defaultURL))
+        #expect(store.spending.count == 2)
     }
 
     @Test func beingRefusedByTheServerGoesBackToSigningIn() async {

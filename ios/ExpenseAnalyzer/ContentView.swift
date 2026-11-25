@@ -54,9 +54,7 @@ struct ContentView: View {
                 Task { await store.reload() }
             }
             .buttonStyle(.borderedProminent)
-            Button("Sign Out") {
-                Task { await store.signOut() }
-            }
+            Button("Sign Out") { store.signOut() }
         }
     }
 }

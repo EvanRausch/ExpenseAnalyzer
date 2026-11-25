@@ -4,7 +4,9 @@ cli.py — run and administer the server from the terminal.
     python -m server.cli serve            start the API on http://127.0.0.1:8000
     python -m server.cli add-user         create an empty account and print its token
     python -m server.cli import-mac       create an account holding the Mac app's data
-    python -m server.cli new-token        print a fresh token for the account (one account)
+    python -m server.cli new-token [--account PREFIX]
+                                          print a fresh token for an account (lists them if
+                                          there are several and none is named)
     python -m server.cli set-webhook URL  tell Plaid where to announce new transactions
     python -m server.cli recategorise     have Gemini categorise everyone's data again with
                                           the two-level list (runs the pipeline from here)
@@ -27,7 +29,7 @@ import sys
 from pathlib import Path
 
 import uvicorn
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from server import pipeline
@@ -68,7 +70,10 @@ def main() -> None:
     mac.add_argument(
         "--home", type=Path, default=PROJECT_ROOT, help="folder containing data/"
     )
-    commands.add_parser("new-token", help="print a fresh token for the account")
+    fresh = commands.add_parser("new-token", help="print a fresh token for an account")
+    fresh.add_argument(
+        "--account", default="", help="first characters of the account id, when several"
+    )
     hook = commands.add_parser(
         "set-webhook", help="point every connected bank at the server's webhook"
     )
@@ -85,10 +90,30 @@ def main() -> None:
         return
     if args.command == "new-token":
         with Session(engine) as db:
-            users = db.scalars(select(User)).all()
-            if len(users) != 1:
-                sys.exit(f"Expected one account, found {len(users)}.")
-            token = add_login(db, users[0])
+            users = db.scalars(select(User).order_by(User.created_at)).all()
+            chosen = [u for u in users if u.id.startswith(args.account)]
+            if len(chosen) != 1:
+                print(
+                    "Accounts (oldest first); say which with --account <first characters>:"
+                )
+                for user in users:
+                    rows = db.scalar(
+                        select(func.count())
+                        .select_from(Transaction)
+                        .where(
+                            Transaction.user_id == user.id,
+                            Transaction.trashed.is_(False),
+                        )
+                    )
+                    banks = ", ".join(
+                        b.institution or "bank" for b in banks_of(db, user.id)
+                    )
+                    print(
+                        f"  {user.id[:8]}  created {user.created_at:%Y-%m-%d %H:%M} UTC, "
+                        f"{rows} transactions, {banks or 'no bank'}"
+                    )
+                sys.exit(1 if users else "No accounts yet.")
+            token = add_login(db, chosen[0])
             db.commit()
         print(f"Token: {token}")
         return
