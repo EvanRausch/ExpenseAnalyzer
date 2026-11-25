@@ -416,6 +416,12 @@ struct SyncMenu: View {
     var body: some View {
         Menu {
             Section {
+                if store.hasData {
+                    // When this phone last got the data from the server
+                    Text(
+                        "Updated \(store.data.exportedAt.formatted(.relative(presentation: .named)))"
+                    )
+                }
                 if let status = store.status {
                     if status.syncing || store.isSyncing {
                         Text("Checking the bank…")

@@ -160,7 +160,7 @@ struct TransactionsScreen: View {
     let scope: Scope
     let transactions: [Transaction]
     @State private var search = ""
-    @State private var order = Order.amount
+    @State private var order = Order.newest
 
     var body: some View {
         let shown = self.shown

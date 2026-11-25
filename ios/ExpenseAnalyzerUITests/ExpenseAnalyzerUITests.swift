@@ -110,7 +110,7 @@ final class ExpenseAnalyzerUITests: XCTestCase {
         snap("transactions-tab")
         row("All transactions").tap()
         app.navigationBars.buttons["Sort"].tap()
-        app.buttons["Newest first"].tap()
+        app.buttons["Largest first"].tap()
         // The search field sits above the list until it is pulled down
         app.swipeDown()
         app.searchFields.firstMatch.tap()
