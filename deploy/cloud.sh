@@ -8,6 +8,7 @@
 #   ./deploy/cloud.sh import-mac  copy this Mac's data into the live database (once)
 #
 # Afterwards:
+#   ./deploy/cloud.sh token       print a fresh sign-in token for the iPhone app
 #   ./deploy/cloud.sh deploy      again, whenever server/ or src/ changed
 #   ./deploy/cloud.sh url         print the server's address (for the iPhone app and Plaid)
 #   ./deploy/cloud.sh logs        show the server's latest log lines
@@ -83,6 +84,47 @@ need_login() {
     echo "This Mac is not signed in to Google Cloud yet. Run: ./deploy/cloud.sh setup" >&2
     exit 1
   fi
+}
+
+# Start the Cloud SQL Auth Proxy on PROXY_PORT; stopped when the script ends
+open_tunnel() {
+  if [ ! -x "$PROXY" ]; then
+    say "Downloading the Cloud SQL Auth Proxy (connects this Mac to the database safely)"
+    mkdir -p "$(dirname "$PROXY")"
+    curl -fsSL -o "$PROXY" \
+      "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/$PROXY_VERSION/cloud-sql-proxy.darwin.$(uname -m)"
+    chmod +x "$PROXY"
+  fi
+  say "Opening a tunnel to the database"
+  mkdir -p "$ROOT/logs"
+  "$PROXY" --gcloud-auth --port "$PROXY_PORT" "$CONNECTION" >"$ROOT/logs/cloud-sql-proxy.log" 2>&1 &
+  proxy_pid=$!
+  trap 'kill $proxy_pid 2>/dev/null || true' EXIT
+  for _ in $(seq 1 30); do
+    nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null && break
+    sleep 1
+  done
+  nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null || { echo "✗ tunnel did not open; see logs/cloud-sql-proxy.log" >&2; exit 1; }
+  ok "tunnel open"
+}
+
+# Run a command with the server's database settings, through the tunnel (values never shown)
+with_database() {
+  local database_url secret_key
+  # The same address the server uses, pointed at the tunnel instead of the socket
+  database_url="$(g secrets versions access latest --secret=expense-database-url | "$PYTHON" -c '
+import sys
+from sqlalchemy.engine import make_url
+url = make_url(sys.stdin.read().strip())
+query = {k: v for k, v in url.query.items() if k != "host"}
+print(url.set(host="127.0.0.1", port=int(sys.argv[1]), query=query).render_as_string(hide_password=False))
+' "$PROXY_PORT")"
+  secret_key="$(g secrets versions access latest --secret=expense-secret-key)"
+  (
+    cd "$ROOT"
+    DATABASE_URL="$database_url" EXPENSE_SECRET_KEY="$secret_key" \
+    PLAID_ENV=production PLAID_WEBHOOK_URL="$URL/plaid/webhook" "$@"
+  )
 }
 
 case "${1:-}" in
@@ -217,44 +259,22 @@ else:
   import-mac)
     need_login
     [ -f "$ROOT/data/enriched_transactions.csv" ] || { echo "No data/enriched_transactions.csv to import" >&2; exit 1; }
-    if [ ! -x "$PROXY" ]; then
-      say "Downloading the Cloud SQL Auth Proxy (connects this Mac to the database safely)"
-      mkdir -p "$(dirname "$PROXY")"
-      curl -fsSL -o "$PROXY" \
-        "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/$PROXY_VERSION/cloud-sql-proxy.darwin.$(uname -m)"
-      chmod +x "$PROXY"
-    fi
-    say "Opening a tunnel to the database"
-    mkdir -p "$ROOT/logs"
-    "$PROXY" --gcloud-auth --port "$PROXY_PORT" "$CONNECTION" >"$ROOT/logs/cloud-sql-proxy.log" 2>&1 &
-    proxy_pid=$!
-    trap 'kill $proxy_pid 2>/dev/null || true' EXIT
-    for _ in $(seq 1 30); do
-      nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null && break
-      sleep 1
-    done
-    nc -z 127.0.0.1 "$PROXY_PORT" || { echo "✗ tunnel did not open; see logs/cloud-sql-proxy.log" >&2; exit 1; }
-    ok "tunnel open"
-
+    open_tunnel
     say "Importing data/ into the live database"
-    # The same address the server uses, pointed at the tunnel instead of the socket
-    database_url="$(g secrets versions access latest --secret=expense-database-url | "$PYTHON" -c '
-import sys
-from sqlalchemy.engine import make_url
-url = make_url(sys.stdin.read().strip())
-query = {k: v for k, v in url.query.items() if k != "host"}
-print(url.set(host="127.0.0.1", port=int(sys.argv[1]), query=query).render_as_string(hide_password=False))
-' "$PROXY_PORT")"
-    secret_key="$(g secrets versions access latest --secret=expense-secret-key)"
-    (
-      cd "$ROOT"
-      DATABASE_URL="$database_url" EXPENSE_SECRET_KEY="$secret_key" \
-      PLAID_ENV=production PLAID_WEBHOOK_URL="$URL/plaid/webhook" \
-        "$PYTHON" -m server.cli import-mac
-    )
+    with_database "$PYTHON" -m server.cli import-mac
     echo
     echo "The Token line above is what the iPhone app asks for on its sign-in screen."
     echo "It is shown once; copy it now (it is not stored anywhere on this Mac)."
+    echo "Lost it? ./deploy/cloud.sh token prints a new one."
+    ;;
+
+  token)
+    need_login
+    open_tunnel
+    say "New sign-in token"
+    with_database "$PYTHON" -m server.cli new-token
+    echo
+    echo "Paste it on the iPhone app's sign-in screen. Earlier tokens keep working."
     ;;
 
   url)
@@ -276,7 +296,7 @@ print(url.set(host="127.0.0.1", port=int(sys.argv[1]), query=query).render_as_st
     ;;
 
   *)
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
