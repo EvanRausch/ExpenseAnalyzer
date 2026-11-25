@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import difflib
+import os
 import re
 import time
 from collections import defaultdict
@@ -1908,7 +1909,7 @@ def _gemini_coverage_summary() -> str:
     )
     try:
         resp = _gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
             contents=prompt,
         )
         return (resp.text or "").strip()

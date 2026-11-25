@@ -324,16 +324,23 @@ def forget_categories(db: Session, user_id: str) -> int:
     Returns how many rows were blanked."""
     book = Book(db, user_id)
     corrections = book.document("corrections", {})
-    translated = enrich_transactions.translate_corrections(
-        corrections, book.custom_categories()
+    in_use = set(corrections.values()) | {
+        r.get("gemini_category", "") for r in book.rows
+    }
+    custom = enrich_transactions.prune_custom_categories(
+        book.custom_categories(), in_use
     )
+    book.set_document("custom_categories", custom)
+    translated = enrich_transactions.translate_corrections(corrections, custom)
     book.set_document("corrections", translated)
+    # Categories already on the list stay, so an interrupted run can be repeated
+    known = set(book.known_categories())
     blanked = 0
     for row in book.rows:
         description = row.get("description", "")
         if description in translated:
             row["gemini_category"] = translated[description]
-        elif row.get("gemini_category"):
+        elif row.get("gemini_category") and row["gemini_category"] not in known:
             row["gemini_category"] = ""
             blanked += 1
     book.save()

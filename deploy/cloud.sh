@@ -10,6 +10,7 @@
 # Afterwards:
 #   ./deploy/cloud.sh token       print a fresh sign-in token for the iPhone app
 #   ./deploy/cloud.sh add-user    create an empty account for another person; prints their token
+#   ./deploy/cloud.sh recategorise have Gemini categorise everyone's transactions again (two-level list)
 #   ./deploy/cloud.sh deploy      again, whenever server/ or src/ changed
 #   ./deploy/cloud.sh url         print the server's address (for the iPhone app and Plaid)
 #   ./deploy/cloud.sh logs        show the server's latest log lines
@@ -29,6 +30,8 @@ RUNNER="expenseanalyzer-run"           # the identity the server runs as
 RUNNER_EMAIL="$RUNNER@$PROJECT.iam.gserviceaccount.com"
 URL="https://$SERVICE-$PROJECT_NUMBER.$REGION.run.app"
 BUNDLE_ID="EvanRL.ExpenseAnalyzer"
+# gemini-2.5-flash, the code's default, only allows 20 requests a day on the free tier
+GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}"
 PROFILE="expenseanalyzer"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -247,7 +250,7 @@ else:
       --min-instances 0 --max-instances 1 --concurrency 20 \
       --cpu 1 --memory 1Gi --timeout 300 \
       --add-cloudsql-instances "$CONNECTION" \
-      --set-env-vars "PLAID_ENV=production,APPLE_BUNDLE_ID=$BUNDLE_ID,PLAID_WEBHOOK_URL=$URL/plaid/webhook" \
+      --set-env-vars "PLAID_ENV=production,APPLE_BUNDLE_ID=$BUNDLE_ID,PLAID_WEBHOOK_URL=$URL/plaid/webhook,GEMINI_MODEL=$GEMINI_MODEL" \
       --set-secrets "${set_secrets#,}"
     say "Checking"
     if curl -fsS --max-time 30 "$URL/health" >/dev/null; then
@@ -288,6 +291,13 @@ else:
     echo "Connect a Bank… in the sync menu to log in to their bank on Plaid's page."
     ;;
 
+  recategorise)
+    need_login
+    open_tunnel
+    say "Categorising every transaction again with the two-level list (a few minutes)"
+    with_database "$PYTHON" -m server.cli recategorise
+    ;;
+
   url)
     echo "$URL"
     ;;
@@ -307,7 +317,7 @@ else:
     ;;
 
   *)
-    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac

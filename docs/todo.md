@@ -4,6 +4,9 @@ Things left to do, roughly in order of usefulness. Tick them off as they are don
 
 ## Needs Evan
 
+- [ ] **Gemini quota.** The key is on the free tier: `gemini-2.5-flash` allows 20 requests a day, which one sync can use up. The server and `deploy/cloud.sh` now use `gemini-3.5-flash` (set `GEMINI_MODEL=gemini-3.5-flash` in `.env` so the Mac app does too). To stop worrying about daily limits, enable billing on the Google Cloud project the Gemini key belongs to (AI Studio → the key's project); a sync costs fractions of a cent.
+- [ ] **"Amazon Prime"**, a category of your own, sits under *Shopping* on the Mac and under *Other* on the server; move it on the phone or leave it.
+
 - [ ] **Places key.** Create an API key in the Google Cloud project (restricted to *Places API (New)*), paste it into `.env` as `GOOGLE_PLACES_API_KEY`, then `./deploy/cloud.sh secrets` and `./deploy/cloud.sh deploy`. Set a daily cap on *Text Search requests* (e.g. 200) in the Places API quotas page.
 - [ ] **Plaid attestation** due 10/8/2026 in the Plaid dashboard (see `docs/plaid-attestations.md`).
 - [ ] **Billing alert** in Google Cloud billing — confirm one exists (e.g. US$25/month).
@@ -17,7 +20,7 @@ Things left to do, roughly in order of usefulness. Tick them off as they are don
 - [ ] **Trashing from the phone** trashes every transaction with the same key, not just the one tapped (known since the iCloud version).
 - [ ] **Phone: show sync progress** — after *Connect a Bank…* the first sync can take a few minutes; the menu only says "Checking the bank…". A small banner on the Summary tab would be clearer.
 - [ ] **Delete account** from the phone (the server route exists: `DELETE /v1/account`). Required by the App Store if the app is ever published.
-- [ ] **UI test data.** The made-up `transactions.json` folder used by the UI walkthrough (`TEST_RUNNER_DATA_FOLDER`) did not come over from the old Mac; regenerate one (merchants it expects: Maple Market, Gadget Depot, a Transport category, Payments income).
+- [x] **UI test data.** `python ios/make_demo_data.py <folder>` writes it; the walkthrough passes against it.
 - [ ] **Server logins never expire** and there is no rate limiting. Fine for two people; revisit before opening up.
 
 ## Decided against, for now

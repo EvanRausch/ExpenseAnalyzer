@@ -13,6 +13,7 @@
 !src/
 src/*
 !src/__init__.py
+!src/categories.py
 !src/ledger.py
 !src/plaid_sync.py
 !src/enrich_transactions.py

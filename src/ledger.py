@@ -53,7 +53,11 @@ try:
 
     _load_dotenv(PROJECT_ROOT / ".env")
     _GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-    _gemini_client = _genai.Client(api_key=_GEMINI_KEY) if _GEMINI_KEY else None
+    _gemini_client = (
+        _genai.Client(api_key=_GEMINI_KEY, http_options={"api_version": "v1beta"})
+        if _GEMINI_KEY
+        else None
+    )
 except Exception:
     _genai = None  # type: ignore
     _gemini_client = None
@@ -1081,7 +1085,7 @@ def _gemini_spending_analysis(rows: list[dict], store=None) -> str:
 
     try:
         resp = _gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
             contents=prompt,
         )
         return (resp.text or "").strip()
@@ -1100,7 +1104,7 @@ def _pick_emoji_for_category(name: str) -> str:
                 f'spending category "{name}". Reply with only the single emoji, nothing else.'
             )
             resp = _gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
                 contents=prompt,
             )
             emoji = (resp.text or "").strip()

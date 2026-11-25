@@ -71,7 +71,10 @@ PLACES_FIELDS = (
 )
 PLACES_RATE_LIMIT_SEC = 0.5  # seconds between Places requests
 GEMINI_BATCH_SIZE = 80  # descriptions per Gemini prompt
-GEMINI_MODEL = "gemini-2.5-flash"  # override with --model
+# Override with --model or the GEMINI_MODEL setting
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+# System instructions need the beta API; google-genai 3 defaults to v1, which refuses them
+GEMINI_HTTP_OPTIONS = {"api_version": "v1beta"}
 
 # Geographic bias: rectangle covering Montréal → Québec City corridor
 # (Places API circle max radius is 50 km — use rectangle instead)
@@ -352,7 +355,7 @@ def _call_gemini(
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY not set in .env")
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=GEMINI_API_KEY, http_options=GEMINI_HTTP_OPTIONS)
 
     last_exc: Exception | None = None
     for attempt in range(GEMINI_MAX_RETRIES):
@@ -1129,12 +1132,27 @@ def translate_corrections(
     return kept
 
 
-def recategorize_all(model: str = GEMINI_MODEL, progress_cb: callable = None) -> int:
-    """Move this Mac's data to the two-level list: translate the corrections, then have
-    Gemini categorise every description again. Returns how many descriptions were redone.
+def prune_custom_categories(custom: dict[str, str], in_use: set[str]) -> dict[str, str]:
+    """Keep only the person's own categories that are in use (an older version saved the
+    whole category list of its day as "custom"; those names must not be offered to Gemini).
     """
+    return {name: group for name, group in custom.items() if name in in_use}
+
+
+def recategorize_all(model: str = GEMINI_MODEL, progress_cb: callable = None) -> int:
+    """Move this Mac's data to the two-level list: translate the corrections, prune the
+    person's own categories to those in use, then have Gemini categorise every description
+    again. Returns how many descriptions were redone."""
     corrections = load_corrections()
-    translated = translate_corrections(corrections, load_custom_categories())
+    cached, _ = _load_cached_enrichment()
+    in_use = set(corrections.values()) | {
+        c.get("category", "") for c in cached.values()
+    }
+    custom = prune_custom_categories(load_custom_categories(), in_use)
+    if custom != load_custom_categories():
+        save_custom_categories(custom)
+        print(f"Your own categories: {', '.join(custom) or 'none'}.")
+    translated = translate_corrections(corrections, custom)
     if translated != corrections:
         CORRECTIONS_FILE.write_text(
             json.dumps(translated, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1143,8 +1161,17 @@ def recategorize_all(model: str = GEMINI_MODEL, progress_cb: callable = None) ->
             f"Corrections: {len(translated)} kept or renamed, "
             f"{len(corrections) - len(translated)} left for Gemini to decide."
         )
-    cached, _ = _load_cached_enrichment()
-    descriptions = [d for d in cached if d not in translated]
+    # Only what is not yet on the list: a run cut short (Gemini quota, outage) can be
+    # repeated without losing the categories it did manage to assign
+    known = set(categories.known_categories(custom))
+    descriptions = [
+        d
+        for d, cls in cached.items()
+        if d not in translated and cls.get("category") not in known
+    ]
+    if not descriptions:
+        print("Every transaction is already on the two-level list.")
+        return 0
     recategorize_descriptions(descriptions, model=model, progress_cb=progress_cb)
     return len(descriptions)
 
@@ -1324,7 +1351,7 @@ def _consolidate_categories(
     try:
         if not GEMINI_API_KEY:
             raise RuntimeError("GEMINI_API_KEY not set")
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = genai.Client(api_key=GEMINI_API_KEY, http_options=GEMINI_HTTP_OPTIONS)
         last_exc: Exception | None = None
         for attempt in range(GEMINI_MAX_RETRIES):
             try:

@@ -844,6 +844,7 @@ def test_moving_to_the_two_level_list_keeps_clear_corrections_and_redoes_the_res
         _row(description="RESTO", gemini_category="Food & Dining"),
         _row(description="BAR", gemini_category="Food & Dining"),
         _row(description="NEW", gemini_category="Restaurants"),
+        _row(description="DONE", gemini_category="Coffee shops & desserts"),
     ]
     corrections = {"METRO": "Groceries", "RESTO": "Food & Dining", "NEW": "Restaurants"}
     user_id, headers = _person(server, rows=rows, documents={"corrections": corrections})
@@ -859,6 +860,7 @@ def test_moving_to_the_two_level_list_keeps_clear_corrections_and_redoes_the_res
             "RESTO": "",  # "Food & Dining" could be several things: Gemini decides
             "BAR": "",
             "NEW": "Restaurants",  # already a name of the list
+            "DONE": "Coffee shops & desserts",  # likewise, from an earlier run
         }
         assert book.document("corrections", {}) == {
             "METRO": "Supermarkets & grocery stores",
