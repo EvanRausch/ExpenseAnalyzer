@@ -55,6 +55,10 @@ _apple_keys = jwt.PyJWKClient(f"{APPLE_ISSUER}/auth/keys")
 _plaid_keys: dict[str, object] = {}
 # Plaid's limit for how old a webhook may be
 WEBHOOK_MAX_AGE = 300
+# A bank linked moments ago may take minutes to load its history: ask again this many
+# times, this far apart
+NOT_READY_RETRIES = 10
+NOT_READY_WAIT = 60
 
 
 class AppleSignIn(BaseModel):
@@ -169,7 +173,13 @@ def create_app(
         def work() -> None:
             syncing.add(user_id)
             try:
-                pipeline.run_job(engine, user_id)
+                for _ in range(NOT_READY_RETRIES):
+                    result = pipeline.run_job(engine, user_id)
+                    if result is None or result.get("complete", True):
+                        break
+                    time.sleep(NOT_READY_WAIT)
+                    if not pipeline.start_job(engine, user_id):
+                        break
             finally:
                 syncing.discard(user_id)
 
@@ -326,11 +336,14 @@ def create_app(
     def plaid_event(body: bytes, signature: str) -> None:
         verify_plaid_webhook(body, signature)
         event = json.loads(body)
-        if event.get("webhook_code") != "SYNC_UPDATES_AVAILABLE":
-            return
+        code = event.get("webhook_code")
         with Session(engine) as db:
             bank = db.scalar(select(Bank).where(Bank.item_id == event.get("item_id")))
-        if bank:
+        print(
+            f"[server] Plaid webhook {event.get('webhook_type')}/{code} for "
+            f"{'a known' if bank else 'an unknown'} bank"
+        )
+        if code == "SYNC_UPDATES_AVAILABLE" and bank:
             start_sync(bank.user_id)
 
     @app.post("/plaid/webhook")

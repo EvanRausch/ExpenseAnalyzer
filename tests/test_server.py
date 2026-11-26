@@ -777,6 +777,26 @@ def test_a_sync_runs_the_pipeline_on_the_persons_data_and_merges_the_results(
     assert (status["syncing"], status["error"]) == (False, "")
 
 
+def test_a_bank_still_loading_its_history_is_asked_again(server, monkeypatch):
+    """Plaid's first download of a new bank can take minutes: the sync retries by itself."""
+    answers = iter(
+        [{"new_rows": 0, "complete": False}, {"new_rows": 2, "complete": True}]
+    )
+    calls = []
+    monkeypatch.setattr(
+        pipeline, "run_pipeline", lambda home: calls.append(1) or next(answers)
+    )
+    monkeypatch.setattr(api, "NOT_READY_WAIT", 0)
+    _, headers = _person(server, bank="item-1")
+
+    assert server.client.post("/v1/sync", headers=headers).json() == {"started": True}
+    server.queued.pop(0)()
+
+    assert len(calls) == 2
+    status = server.client.get("/v1/status", headers=headers).json()
+    assert (status["syncing"], status["error"]) == (False, "")
+
+
 def test_a_sync_remembers_the_descriptions_of_the_persons_transfers(server):
     def paid(day, amount):
         return _row(description="VIREMENT CARTE", date=day, amount=amount)

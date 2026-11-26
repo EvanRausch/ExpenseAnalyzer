@@ -12,6 +12,7 @@
 #                                 several; give the first characters of the one you mean)
 #   ./deploy/cloud.sh add-user    create an empty account for another person; prints their token
 #   ./deploy/cloud.sh recategorise have Gemini categorise everyone's transactions again (two-level list)
+#   ./deploy/cloud.sh sync <id>    fetch an account's new bank transactions now (first characters of its id)
 #   ./deploy/cloud.sh deploy      again, whenever server/ or src/ changed
 #   ./deploy/cloud.sh url         print the server's address (for the iPhone app and Plaid)
 #   ./deploy/cloud.sh logs        show the server's latest log lines
@@ -293,6 +294,14 @@ else:
     echo "Connect a Bank… in the sync menu to log in to their bank on Plaid's page."
     ;;
 
+  sync)
+    need_login
+    [ -n "${2:-}" ] || { echo "Which account? ./deploy/cloud.sh sync <first characters of the id>" >&2; exit 1; }
+    open_tunnel
+    say "Fetching the bank's transactions"
+    with_database "$PYTHON" -m server.cli sync --account "$2"
+    ;;
+
   recategorise)
     need_login
     open_tunnel
@@ -319,7 +328,7 @@ else:
     ;;
 
   *)
-    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac

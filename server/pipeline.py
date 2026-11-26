@@ -247,9 +247,14 @@ def start_job(engine: Engine, user_id: str) -> bool:
 
 def run_job(
     engine: Engine, user_id: str, runner: Callable[[Path], dict] | None = None
-) -> None:
-    """Fetch the person's new bank transactions and categorise them, after start_job."""
+) -> dict | None:
+    """Fetch the person's new bank transactions and categorise them, after start_job.
+
+    Returns the pipeline's result ({"new_rows", "complete"}), or None if it failed.
+    "complete" is False while a newly linked bank is still loading its history at Plaid.
+    """
     error = ""
+    result = None
     try:
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
@@ -287,6 +292,7 @@ def run_job(
                 .values(running=False, finished_at=now(), error=error[:300])
             )
             db.commit()
+    return result
 
 
 INTERRUPTED = "The server stopped during the sync; it will finish on the next one"

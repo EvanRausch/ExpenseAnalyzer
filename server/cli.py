@@ -10,6 +10,8 @@ cli.py — run and administer the server from the terminal.
     python -m server.cli set-webhook URL  tell Plaid where to announce new transactions
     python -m server.cli recategorise     have Gemini categorise everyone's data again with
                                           the two-level list (runs the pipeline from here)
+    python -m server.cli sync [--account PREFIX]
+                                          fetch an account's new bank transactions now
 
 The printed token is what the app sends as "Authorization: Bearer <token>"; the iPhone app
 accepts it on its sign-in screen. Signing in with Apple later from that phone attaches the
@@ -82,6 +84,10 @@ def main() -> None:
         "recategorise",
         help="categorise every transaction again with the two-level list",
     )
+    fetch = commands.add_parser("sync", help="fetch an account's bank transactions now")
+    fetch.add_argument(
+        "--account", default="", help="first characters of the account id"
+    )
     args = parser.parse_args()
 
     engine = make_engine()
@@ -116,6 +122,36 @@ def main() -> None:
             token = add_login(db, chosen[0])
             db.commit()
         print(f"Token: {token}")
+        return
+    if args.command == "sync":
+        with Session(engine) as db:
+            users = db.scalars(select(User).order_by(User.created_at)).all()
+            chosen = [u for u in users if u.id.startswith(args.account)]
+        if len(chosen) != 1:
+            sys.exit("Say which account with --account <first characters>.")
+        user_id = chosen[0].id
+        if not pipeline.start_job(engine, user_id):
+            sys.exit("A sync is already running for that account; try again later.")
+        print(f"Syncing {user_id[:8]}… (a few minutes)…", flush=True)
+        result = pipeline.run_job(engine, user_id)
+        with Session(engine) as db:
+            job = db.get(Job, user_id)
+            rows = db.scalar(
+                select(func.count())
+                .select_from(Transaction)
+                .where(Transaction.user_id == user_id, Transaction.trashed.is_(False))
+            )
+        if job.error:
+            sys.exit(f"Failed: {job.error}")
+        still_loading = result is not None and not result["complete"]
+        print(
+            f"Done: {result['new_rows'] if result else 0} new, {rows} transactions in all"
+            + (
+                " — the bank is still loading its history; run again in a minute"
+                if still_loading
+                else ""
+            )
+        )
         return
     if args.command == "recategorise":
         with Session(engine) as db:
